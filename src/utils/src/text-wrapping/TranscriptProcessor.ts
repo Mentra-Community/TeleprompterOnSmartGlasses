@@ -162,16 +162,19 @@ export class TranscriptProcessor {
     }
   }
 
-  private wrapText(text: string, maxLineLength: number): string[] {
+  // Wrap text into lines based on max line length
+  public wrapText(text: string, maxLineLength: number): string[] {
     const result: string[] = [];
-    while (text !== "") {
-      if (text.length <= maxLineLength) {
-        result.push(text);
+    let remainingText = text.trim();
+    
+    while (remainingText.length > 0) {
+      if (remainingText.length <= maxLineLength) {
+        result.push(remainingText);
         break;
       } else {
         let splitIndex = maxLineLength;
         // move splitIndex left until we find a space
-        while (splitIndex > 0 && text.charAt(splitIndex) !== " ") {
+        while (splitIndex > 0 && remainingText.charAt(splitIndex) !== " ") {
           splitIndex--;
         }
         // If we didn't find a space, force split
@@ -179,9 +182,9 @@ export class TranscriptProcessor {
           splitIndex = maxLineLength;
         }
 
-        const chunk = text.substring(0, splitIndex).trim();
+        const chunk = remainingText.substring(0, splitIndex).trim();
         result.push(chunk);
-        text = text.substring(splitIndex).trim();
+        remainingText = remainingText.substring(splitIndex).trim();
       }
     }
     return result;
@@ -220,5 +223,38 @@ export class TranscriptProcessor {
 
   public getMaxLines(): number {
     return this.maxLines;
+  }
+
+  // Helper method to split a full text into segments for teleprompter
+  public splitTextIntoSegments(fullText: string, segmentLines: number = 10): string[] {
+    // First wrap the text into lines
+    const allLines = this.wrapText(fullText, this.maxCharsPerLine);
+    
+    // Group lines into segments
+    const segments: string[] = [];
+    for (let i = 0; i < allLines.length; i += segmentLines) {
+      const segmentLines = allLines.slice(i, i + this.maxLines);
+      segments.push(segmentLines.join('\n'));
+    }
+    
+    return segments;
+  }
+  
+  // Count words in a text
+  public countWords(text: string): number {
+    return text.split(/\s+/).filter(word => word.length > 0).length;
+  }
+  
+  // Estimate average words per line
+  public estimateWordsPerLine(text: string): number {
+    const lines = this.wrapText(text, this.maxCharsPerLine);
+    if (lines.length === 0) return 0;
+    
+    let totalWords = 0;
+    for (const line of lines) {
+      totalWords += this.countWords(line);
+    }
+    
+    return totalWords / lines.length;
   }
 }

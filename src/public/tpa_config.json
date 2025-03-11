@@ -5,7 +5,7 @@
     "settings": [
         {
             "type": "group",
-            "title": "Layout settings"
+            "title": "General settings"
         },
         {
             "key": "line_width",
@@ -54,6 +54,14 @@
                     "value": 5
                 }
             ]
+        },
+        {
+            "key": "scroll_speed",
+            "type": "slider",
+            "label": "Scroll speed (words per minute)",
+            "defaultValue": 100,
+            "min": 60,
+            "max": 200
         }
     ]
 }
