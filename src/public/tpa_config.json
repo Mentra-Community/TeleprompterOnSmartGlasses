@@ -1,8 +1,59 @@
 {
-    "tpa_name": "Mentra Merge",
-    "tpa_description": "Mentra Merge is a TPA that uses AI to help you merge your data.",
-    "tpa_icon": "https://mentra.ai/logo.png",
-    "tpa_color": "#000000",
-    "tpa_background_color": "#FFFFFF",
-    "tpa_border_color": "#000000"
+    "name": "Teleprompter",
+    "description": "Teleprompter app for smart glasses.",
+    "version": "1.0.0",
+    "settings": [
+        {
+            "type": "group",
+            "title": "Layout settings"
+        },
+        {
+            "key": "line_width",
+            "type": "select",
+            "label": "Line width",
+            "defaultValue": "Medium",
+            "options": [
+                {
+                    "label": "Very Narrow",
+                    "value": "Very Narrow"
+                },
+                {
+                    "label": "Narrow",
+                    "value": "Narrow"
+                },
+                {
+                    "label": "Medium",
+                    "value": "Medium"
+                },
+                {
+                    "label": "Wide",
+                    "value": "Wide"
+                }
+            ]
+        },
+        {
+            "key": "number_of_lines",
+            "type": "select",
+            "label": "Number of lines",
+            "defaultValue": 3,
+            "options": [
+                {
+                    "label": "2",
+                    "value": 2
+                },
+                {
+                    "label": "3",
+                    "value": 3
+                },
+                {
+                    "label": "4",
+                    "value": 4
+                },
+                {
+                    "label": "5",
+                    "value": 5
+                }
+            ]
+        }
+    ]
 }
