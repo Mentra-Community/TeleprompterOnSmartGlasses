@@ -1,4 +1,4 @@
-// augmentos_cloud/packages/apps/captions/src/index.ts
+// augmentos_cloud/packages/apps/teleprompter/src/index.ts
 import express from 'express';
 import WebSocket from 'ws';
 import path from 'path';
@@ -15,28 +15,105 @@ import {
   CloudToTpaMessageType,
   ViewType,
   LayoutType,
-  createTranscriptionStream,
 } from './sdk';
-import { TranscriptProcessor } from './utils/src/text-wrapping/TranscriptProcessor';
+
+class TextScrollManager {
+  private text: string;
+  private lineWidth: number;
+  private numberOfLines: number;
+  private currentPosition: number;
+  private scrollSpeed: number; // Characters per second
+  private scrollInterval: number; // Milliseconds between updates
+
+  constructor(text: string, lineWidth: number = 30, numberOfLines: number = 3, scrollSpeed: number = 2) {
+    this.text = text || this.getDefaultText();
+    this.lineWidth = lineWidth;
+    this.numberOfLines = numberOfLines;
+    this.currentPosition = 0;
+    this.scrollSpeed = scrollSpeed;
+    this.scrollInterval = 500; // Default to updating every 500ms
+  }
+
+  getDefaultText(): string {
+    return `Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content through the settings. The teleprompter will automatically scroll text at a comfortable reading pace. You can adjust the scroll speed, line width, and number of lines through the settings menu. As you read this text, it will continue to scroll upward, allowing you to deliver your presentation smoothly and professionally.`;
+  }
+
+  setText(newText: string): void {
+    this.text = newText || this.getDefaultText();
+    this.currentPosition = 0;
+  }
+
+  setScrollSpeed(charsPerSecond: number): void {
+    this.scrollSpeed = charsPerSecond;
+  }
+
+  setLineWidth(width: number): void {
+    this.lineWidth = width;
+  }
+
+  setNumberOfLines(lines: number): void {
+    this.numberOfLines = lines;
+  }
+
+  setScrollInterval(intervalMs: number): void {
+    this.scrollInterval = intervalMs;
+  }
+
+  getScrollInterval(): number {
+    return this.scrollInterval;
+  }
+
+  resetPosition(): void {
+    this.currentPosition = 0;
+  }
+
+  advancePosition(): void {
+    // Move forward by characters based on scroll speed and interval
+    const charsToAdvance = Math.ceil((this.scrollSpeed * this.scrollInterval) / 1000);
+    this.currentPosition += charsToAdvance;
+    
+    // Cap at the end of text
+    if (this.currentPosition > this.text.length) {
+      this.currentPosition = this.text.length;
+    }
+  }
+
+  getCurrentVisibleText(): string {
+    // Calculate how many characters to display
+    const totalCharsToDisplay = this.lineWidth * this.numberOfLines;
+    
+    // Get the relevant portion of text starting from current position
+    let displayText = this.text.substring(this.currentPosition);
+    
+    // Format the text into lines
+    let formattedText = '';
+    for (let i = 0; i < displayText.length; i += this.lineWidth) {
+      const line = displayText.substring(i, i + this.lineWidth);
+      formattedText += line + '\n';
+      
+      // Stop if we've reached the number of lines to display
+      if (i >= (this.numberOfLines - 1) * this.lineWidth) {
+        break;
+      }
+    }
+    
+    return formattedText.trim();
+  }
+
+  isAtEnd(): boolean {
+    return this.currentPosition >= this.text.length;
+  }
+}
 
 const app = express();
-// const PORT = systemApps.captions.port;
 const PORT = 80; // Default http port.
 const PACKAGE_NAME = 'com.augmentos.teleprompter';
 const API_KEY = 'test_key'; // In production, this would be securely stored
 
-// No longer need userFinalTranscripts map as we store history in the TranscriptProcessor
-const userTranscriptProcessors: Map<string, TranscriptProcessor> = new Map();
+// Track user sessions and their scroll managers
+const userScrollManagers: Map<string, TextScrollManager> = new Map();
 const userSessions = new Map<string, Set<string>>(); // userId -> Set<sessionId>
-const userLanguageSettings: Map<string, string> = new Map(); // userId -> language code
-const MAX_FINAL_TRANSCRIPTS = 5; // Hardcoded to 3 final transcripts
-
-// For debouncing transcripts per session
-interface TranscriptDebouncer {
-  lastSentTime: number;
-  timer: NodeJS.Timeout | null;
-}
-const transcriptDebouncers: Map<string, TranscriptDebouncer> = new Map();
+const sessionScrollers: Map<string, NodeJS.Timeout> = new Map(); // sessionId -> scroll interval timer
 
 // Parse JSON bodies
 app.use(express.json());
@@ -47,27 +124,16 @@ app.use(express.static(path.join(__dirname, './public')));
 // Track active sessions
 const activeSessions = new Map<string, WebSocket>();
 
-function convertLineWidth(width: string | number, isHanzi: boolean): number {
+function convertLineWidth(width: string | number): number {
   if (typeof width === 'number') return width;
 
-  if (!isHanzi) {
   switch (width.toLowerCase()) {
-      case 'very narrow': return 21;
-      case 'narrow': return 30;
-      case 'medium': return 38;
-      case 'wide': return 44;
-      case 'very wide': return 52;
-      default: return 45;
-    }
-  } else {
-    switch (width.toLowerCase()) {
-      case 'very narrow': return 7;
-      case 'narrow': return 10;
-      case 'medium': return 14;
-      case 'wide': return 18;
-      case 'very wide': return 21;
-      default: return 14;
-    }
+    case 'very narrow': return 21;
+    case 'narrow': return 30;
+    case 'medium': return 38;
+    case 'wide': return 44;
+    case 'very wide': return 52;
+    default: return 38;
   }
 }
 
@@ -78,21 +144,38 @@ async function fetchAndApplySettings(sessionId: string, userId: string) {
     });
     const settings = response.data.settings;
     console.log(`Fetched settings for session ${sessionId}:`, settings);
+    
     const lineWidthSetting = settings.find((s: any) => s.key === 'line_width');
     const numberOfLinesSetting = settings.find((s: any) => s.key === 'number_of_lines');
-    const transcribeLanguageSetting = settings.find((s: any) => s.key === 'transcribe_language');
-    
-    // Store the language setting for this user (default to en-US if not specified)
-    const language = transcribeLanguageSetting?.value || 'en-US';
-    const numberOfLines = numberOfLinesSetting ? Number(numberOfLinesSetting.value) : 3; // fallback default
+    const scrollSpeedSetting = settings.find((s: any) => s.key === 'scroll_speed');
+    const customTextSetting = settings.find((s: any) => s.key === 'custom_text');
 
+    // Apply settings with defaults
+    const lineWidth = lineWidthSetting ? convertLineWidth(lineWidthSetting.value) : 38;
+    const numberOfLines = numberOfLinesSetting ? Number(numberOfLinesSetting.value) : 3;
+    const scrollSpeed = scrollSpeedSetting ? Number(scrollSpeedSetting.value) : 2;
+    const customText = customTextSetting ? customTextSetting.value : '';
+    
+    // Create or update scroll manager
+    let scrollManager = userScrollManagers.get(userId);
+    if (!scrollManager) {
+      scrollManager = new TextScrollManager(customText, lineWidth, numberOfLines, scrollSpeed);
+      userScrollManagers.set(userId, scrollManager);
+    } else {
+      scrollManager.setLineWidth(lineWidth);
+      scrollManager.setNumberOfLines(numberOfLines);
+      scrollManager.setScrollSpeed(scrollSpeed);
+      if (customText) {
+        scrollManager.setText(customText);
+      }
+    }
+    
   } catch (err) {
     console.error(`Error fetching settings for session ${sessionId}:`, err);
     // Fallback to default values.
-    const transcriptProcessor = new TranscriptProcessor(30, 3, MAX_FINAL_TRANSCRIPTS);
-    userTranscriptProcessors.set(userId, transcriptProcessor);
-    userLanguageSettings.set(userId, 'en-US'); // Default language
-    return 'en-US';
+    const scrollManager = new TextScrollManager('', 38, 3, 2);
+    userScrollManagers.set(userId, scrollManager);
+    return;
   }
 }
 
@@ -100,10 +183,10 @@ async function fetchAndApplySettings(sessionId: string, userId: string) {
 app.post('/webhook', async (req, res) => {
   try {
     const { sessionId, userId } = req.body;
-    console.log(`\n\n🗣️🗣️🗣️Received session request for user ${userId}, session ${sessionId}\n\n`);
+    console.log(`\n\n📜📜📜 Received teleprompter session request for user ${userId}, session ${sessionId}\n\n`);
 
     // Start WebSocket connection to cloud
-    const ws = new WebSocket(`ws://${CLOUD_URL}/tpa-ws`);
+    const ws = new WebSocket(`ws://cloud/tpa-ws`);
 
     ws.on('open', async () => {
       console.log(`\n[Session ${sessionId}]\n connected to augmentos-cloud\n`);
@@ -114,11 +197,12 @@ app.post('/webhook', async (req, res) => {
         packageName: PACKAGE_NAME,
         apiKey: API_KEY
       };
+
+      console.log(`Sending connection init message to augmentos-cloud for session ${sessionId}`);
+      console.log(JSON.stringify(initMessage));
       ws.send(JSON.stringify(initMessage));
 
       // Fetch and apply settings for the session
-      // We'll subscribe to the appropriate language in the CONNECTION_ACK handler
-      // after we've loaded the settings
       await fetchAndApplySettings(sessionId, userId).catch(err =>
         console.error(`Error in fetchAndApplySettings for session ${sessionId}:`, err)
       );
@@ -146,7 +230,8 @@ app.post('/webhook', async (req, res) => {
         }
       }
       
-      transcriptDebouncers.delete(sessionId);
+      // Clear any active scroller for this session
+      stopScrolling(sessionId);
     });
 
     // Track this session for the user
@@ -157,9 +242,6 @@ app.post('/webhook', async (req, res) => {
 
     activeSessions.set(sessionId, ws);
     
-    // Initialize debouncer for the session
-    transcriptDebouncers.set(sessionId, { lastSentTime: 0, timer: null });
-
     res.status(200).json({ status: 'connecting' });
   } catch (error) {
     console.error('Error handling webhook:', error);
@@ -167,32 +249,31 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Serve static files from the public directory
-app.use(express.static(path.join(__dirname, './public')));
-
 function handleMessage(sessionId: string, userId: string, ws: WebSocket, message: any) {
   switch (message.type) {
     case CloudToTpaMessageType.CONNECTION_ACK: {
-      // Connection acknowledged, subscribe to language-specific transcription
-      const language = userLanguageSettings.get(userId) || 'en-US';
-      const transcriptionStream = createTranscriptionStream(language);
+      // Connection acknowledged, start teleprompter
+      console.log(`Session ${sessionId} connected, starting teleprompter`);
       
-      const subMessage: TpaSubscriptionUpdateMessage = {
+      // Subscribe to control messages (if needed)
+      const subMessage: TpaSubscriptionUpdate = {
         type: TpaToCloudMessageType.SUBSCRIPTION_UPDATE,
         packageName: PACKAGE_NAME,
         sessionId,
         subscriptions: []
       };
       ws.send(JSON.stringify(subMessage));
-      console.log(`Session ${sessionId} connected and subscribed to ${transcriptionStream}`);
+      
+      // Start the teleprompter after a brief delay
+      setTimeout(() => {
+        startScrolling(sessionId, userId, ws);
+      }, 1000);
+      
       break;
     }
 
     case CloudToTpaMessageType.DATA_STREAM: {
-      const streamMessage = message as DataStream;
-      if (streamMessage.streamType === StreamType.TRANSCRIPTION) {
-          handleTranscription(sessionId, userId, ws, streamMessage.data);
-      }
+      // Handle any control messages if needed
       break;
     }
 
@@ -202,93 +283,71 @@ function handleMessage(sessionId: string, userId: string, ws: WebSocket, message
 }
 
 /**
- * Processes the transcription, applies debouncing, and then sends a display event.
+ * Starts scrolling the teleprompter text for a session
  */
-function handleTranscription(sessionId: string, userId: string, ws: WebSocket, transcriptionData: any) {
-  let transcriptProcessor = userTranscriptProcessors.get(userId);
-  if (!transcriptProcessor) {
-    transcriptProcessor = new TranscriptProcessor(30, 3, MAX_FINAL_TRANSCRIPTS);
-    userTranscriptProcessors.set(userId, transcriptProcessor);
+function startScrolling(sessionId: string, userId: string, ws: WebSocket) {
+  // Check if we already have a scroller for this session
+  if (sessionScrollers.has(sessionId)) {
+    stopScrolling(sessionId);
   }
-
-  const isFinal = transcriptionData.isFinal;
-  const newTranscript = transcriptionData.text;
-  const language = transcriptionData.transcribeLanguage || 'en-US';
-
-  // Log language information from the transcription
-  console.log(`[Session ${sessionId}]: Received transcription in language: ${language}`);
-
-  // Process the new transcript - this will add it to history if it's final
-  transcriptProcessor.processString(newTranscript, isFinal);
-
-  let textToDisplay;
-
-  if (isFinal) {
-    // For final transcripts, get the combined history of all final transcripts
-    const finalTranscriptsHistory = transcriptProcessor.getCombinedTranscriptHistory();
-    
-    // Process this combined history to format it properly
-    textToDisplay = transcriptProcessor.getFormattedTranscriptHistory();
-    
-    console.log(`[Session ${sessionId}]: finalTranscriptCount=${transcriptProcessor.getFinalTranscriptHistory().length}`);
-  } else {
-    // For non-final, get the combined history and add the current partial transcript
-    const combinedTranscriptHistory = transcriptProcessor.getCombinedTranscriptHistory();
-    const textToProcess = `${combinedTranscriptHistory} ${newTranscript}`;
-    
-    // Process this combined text for display
-    textToDisplay = transcriptProcessor.getFormattedPartialTranscript(textToProcess);
+  
+  // Get or create scroll manager for this user
+  let scrollManager = userScrollManagers.get(userId);
+  if (!scrollManager) {
+    scrollManager = new TextScrollManager('', 38, 3, 2);
+    userScrollManagers.set(userId, scrollManager);
   }
-
-  console.log(`[Session ${sessionId}]: ${textToDisplay}`);
-  console.log(`[Session ${sessionId}]: isFinal=${isFinal}`);
-
-  debounceAndShowTranscript(sessionId, userId, ws, textToDisplay, isFinal);
+  
+  // Reset position to start
+  scrollManager.resetPosition();
+  
+  // Show initial text
+  showTextToUser(sessionId, ws, scrollManager.getCurrentVisibleText());
+  
+  // Create interval to scroll the text
+  const scrollInterval = setInterval(() => {
+    // Advance the position
+    scrollManager.advancePosition();
+    
+    // Get current text to display
+    const textToDisplay = scrollManager.getCurrentVisibleText();
+    
+    // Show the text
+    showTextToUser(sessionId, ws, textToDisplay);
+    
+    // Check if we've reached the end
+    if (scrollManager.isAtEnd()) {
+      // Optionally stop scrolling or loop back to the beginning
+      stopScrolling(sessionId);
+      
+      // After a brief pause, restart from the beginning
+      setTimeout(() => {
+        scrollManager.resetPosition();
+        startScrolling(sessionId, userId, ws);
+      }, 3000);
+    }
+  }, scrollManager.getScrollInterval());
+  
+  // Store the interval
+  sessionScrollers.set(sessionId, scrollInterval);
 }
 
 /**
- * Debounces the sending of transcript display events so that non-final transcripts
- * are not sent too frequently. Final transcripts are sent immediately.
+ * Stops scrolling for a session
  */
-function debounceAndShowTranscript(sessionId: string, userId: string, ws: WebSocket, transcript: string, isFinal: boolean) {
-  const debounceDelay = 400; // in milliseconds
-  const debouncer = transcriptDebouncers.get(sessionId);
-  if (!debouncer) {
-    // Initialize if it doesn't exist
-    transcriptDebouncers.set(sessionId, { lastSentTime: 0, timer: null });
-  }
-  const currentDebouncer = transcriptDebouncers.get(sessionId)!;
-
-  // Clear any previously scheduled timer
-  if (currentDebouncer.timer) {
-    clearTimeout(currentDebouncer.timer);
-    currentDebouncer.timer = null;
-  }
-
-  const now = Date.now();
-
-  if (isFinal) {
-    showTranscriptsToUser(sessionId, ws, transcript, true);
-    currentDebouncer.lastSentTime = now;
-    return;
-  }
-
-  if (now - currentDebouncer.lastSentTime >= debounceDelay) {
-    showTranscriptsToUser(sessionId, ws, transcript, false);
-    currentDebouncer.lastSentTime = now;
-  } else {
-    currentDebouncer.timer = setTimeout(() => {
-      showTranscriptsToUser(sessionId, ws, transcript, false);
-      currentDebouncer.lastSentTime = Date.now();
-    }, debounceDelay);
+function stopScrolling(sessionId: string) {
+  const interval = sessionScrollers.get(sessionId);
+  if (interval) {
+    clearInterval(interval);
+    sessionScrollers.delete(sessionId);
   }
 }
 
 /**
- * Sends a display event (transcript) to the cloud.
+ * Sends a display event (text) to the cloud.
  */
-function showTranscriptsToUser(sessionId: string, ws: WebSocket, transcript: string, isFinal: boolean) {
-  console.log(`[Session ${sessionId}]: Transcript to show: \n${transcript}`);
+function showTextToUser(sessionId: string, ws: WebSocket, text: string) {
+  console.log(`[Session ${sessionId}]: Text to show: \n${text}`);
 
   const displayRequest: DisplayRequest = {
     type: TpaToCloudMessageType.DISPLAY_REQUEST,
@@ -297,12 +356,11 @@ function showTranscriptsToUser(sessionId: string, ws: WebSocket, transcript: str
     sessionId,
     layout: {
       layoutType: LayoutType.TEXT_WALL,
-      text: transcript
+      text: text
     },
     timestamp: new Date(),
-    // Use a fixed duration for final transcripts; non-final ones omit the duration
-    durationMs: 20 * 1000, // 20 seconds. If no other transcript is received it will be cleared after this time.
-    forceDisplay: isFinal
+    durationMs: 10 * 1000, // 10 seconds timeout in case updates stop
+    forceDisplay: true
   };
 
   ws.send(JSON.stringify(displayRequest));
@@ -310,9 +368,8 @@ function showTranscriptsToUser(sessionId: string, ws: WebSocket, transcript: str
 
 /**
  * Refreshes all sessions for a user after settings changes.
- * Returns true if at least one session was refreshed.
  */
-function refreshUserSessions(userId: string, newUserTranscript: string) {
+function refreshUserSessions(userId: string) {
   const sessionIds = userSessions.get(userId);
   if (!sessionIds || sessionIds.size === 0) {
     console.log(`No active sessions found for user ${userId}`);
@@ -320,7 +377,13 @@ function refreshUserSessions(userId: string, newUserTranscript: string) {
   }
   
   console.log(`Refreshing ${sessionIds.size} sessions for user ${userId}`);
-  console.log(`New user transcript: ${newUserTranscript}`);
+  
+  // Get the scroll manager
+  const scrollManager = userScrollManagers.get(userId);
+  if (!scrollManager) {
+    console.log(`No scroll manager found for user ${userId}`);
+    return false;
+  }
   
   // Refresh each session
   for (const sessionId of sessionIds) {
@@ -328,28 +391,13 @@ function refreshUserSessions(userId: string, newUserTranscript: string) {
     if (ws && ws.readyState === 1) {
       console.log(`Refreshing session ${sessionId}`);
       
-      // Update subscription for new language settings
-      updateSubscriptionForSession(sessionId, userId);
+      // Stop current scrolling
+      stopScrolling(sessionId);
       
-      // Clear display to reset visual state
-      const clearDisplayRequest: DisplayRequest = {
-        type: TpaToCloudMessageType.DISPLAY_REQUEST,
-        view: ViewType.MAIN,
-        packageName: PACKAGE_NAME,
-        sessionId,
-        layout: {
-          layoutType: LayoutType.TEXT_WALL,
-          text: newUserTranscript // Empty text to clear the display
-        },
-        timestamp: new Date(),
-        durationMs: 20 * 1000 // 20 seconds. If no other transcript is received it will be cleared after this time.
-      };
-      
-      try {
-        ws.send(JSON.stringify(clearDisplayRequest));
-      } catch (error) {
-        console.error(`Error clearing display for session ${sessionId}:`, error);
-      }
+      // Restart with new settings
+      setTimeout(() => {
+        startScrolling(sessionId, userId, ws);
+      }, 500);
     } else {
       console.log(`Session ${sessionId} is not open, removing from tracking`);
       activeSessions.delete(sessionId);
@@ -362,78 +410,47 @@ function refreshUserSessions(userId: string, newUserTranscript: string) {
 
 app.post('/settings', (req, res) => {
   try {
-    console.log('Received settings update for captions:', req.body);
+    console.log('Received settings update for teleprompter:', req.body);
     const { userIdForSettings, settings } = req.body;
-    
-    if (!userIdForSettings || !Array.isArray(settings)) {
-      return res.status(400).json({ error: 'Missing userId or settings array in payload' });
-    }
     
     const lineWidthSetting = settings.find((s: any) => s.key === 'line_width');
     const numberOfLinesSetting = settings.find((s: any) => s.key === 'number_of_lines');
-    const transcribeLanguageSetting = settings.find((s: any) => s.key === 'transcribe_language');
+    const scrollSpeedSetting = settings.find((s: any) => s.key === 'scroll_speed');
+    const customTextSetting = settings.find((s: any) => s.key === 'custom_text');
 
-    // Validate settings
-    let lineWidth = 30; // default
-    
-    let numberOfLines = 3; // default
-    if (numberOfLinesSetting) {
-      numberOfLines = Number(numberOfLinesSetting.value);
-      if (isNaN(numberOfLines) || numberOfLines < 1) numberOfLines = 3;
+    // Get or create scroll manager
+    let scrollManager = userScrollManagers.get(userIdForSettings);
+    if (!scrollManager) {
+      scrollManager = new TextScrollManager('', 38, 3, 2);
+      userScrollManagers.set(userIdForSettings, scrollManager);
     }
     
-    // Get language setting
-    const language = languageToLocale(transcribeLanguageSetting?.value) || 'en-US';
-    const previousLanguage = userLanguageSettings.get(userIdForSettings);
-    const languageChanged = language !== previousLanguage;
-
+    // Update settings
     if (lineWidthSetting) {
-      const isChineseLanguage = language.startsWith('zh-') || language.startsWith('ja-');
-      lineWidth = typeof lineWidthSetting.value === 'string' ? 
-        convertLineWidth(lineWidthSetting.value, isChineseLanguage) : 
-        (typeof lineWidthSetting.value === 'number' ? lineWidthSetting.value : 30);
-    }
-
-    console.log(`Line width setting: ${lineWidth}`);
-    
-    if (languageChanged) {
-      console.log(`Language changed for user ${userIdForSettings}: ${previousLanguage} -> ${language}`);
-      userLanguageSettings.set(userIdForSettings, language);
+      const lineWidth = convertLineWidth(lineWidthSetting.value);
+      scrollManager.setLineWidth(lineWidth);
     }
     
-    // Create a new processor
-    const newProcessor = new TranscriptProcessor(lineWidth, numberOfLines, MAX_FINAL_TRANSCRIPTS);
-    
-    // Important: Only preserve transcript history if language DIDN'T change
-    if (!languageChanged && userTranscriptProcessors.has(userIdForSettings)) {
-      // Get the previous transcript history
-      const previousTranscriptHistory = userTranscriptProcessors.get(userIdForSettings)?.getFinalTranscriptHistory() || [];
-      
-      // Add each previous transcript to the new processor
-      for (const transcript of previousTranscriptHistory) {
-        newProcessor.processString(transcript, true);
+    if (numberOfLinesSetting) {
+      const numberOfLines = Number(numberOfLinesSetting.value);
+      if (!isNaN(numberOfLines) && numberOfLines > 0) {
+        scrollManager.setNumberOfLines(numberOfLines);
       }
-      
-      console.log(`Preserved ${previousTranscriptHistory.length} transcripts after settings change`);
-    } else if (languageChanged) {
-      console.log(`Cleared transcript history due to language change`);
     }
     
-    // Replace the old processor with the new one
-    userTranscriptProcessors.set(userIdForSettings, newProcessor);
+    if (scrollSpeedSetting) {
+      const scrollSpeed = Number(scrollSpeedSetting.value);
+      if (!isNaN(scrollSpeed) && scrollSpeed > 0) {
+        scrollManager.setScrollSpeed(scrollSpeed);
+      }
+    }
     
-    // Get transcript to display
-    const newUserTranscript = newProcessor.getCombinedTranscriptHistory() || "";
-
-    // Refresh active sessions
-    const sessionsRefreshed = refreshUserSessions(userIdForSettings, newUserTranscript);
+    if (customTextSetting) {
+      scrollManager.setText(customTextSetting.value);
+    }
     
-    res.json({ 
-      status: 'Settings updated successfully',
-      sessionsRefreshed: sessionsRefreshed,
-      languageChanged: languageChanged,
-      transcriptsPreserved: !languageChanged
-    });
+    // Refresh all active sessions for this user
+    refreshUserSessions(userIdForSettings);
   } catch (error) {
     console.error('Error updating settings:', error);
     res.status(500).json({ error: 'Internal server error updating settings' });
@@ -446,5 +463,5 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`${PACKAGE_NAME} server running`);
+  console.log(`${PACKAGE_NAME} server running on port ${PORT}`);
 });

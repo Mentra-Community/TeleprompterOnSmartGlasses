@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'prod-mentra-merge',
+      name: 'prod-mentra-teleprompter',
       script: 'dist/index.js',
       instances: 1,
       exec_mode: 'fork',
