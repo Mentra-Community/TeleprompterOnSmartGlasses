@@ -1,0 +1,46 @@
+{
+  "name": "mentramerge",
+  "version": "1.0.0",
+  "description": "Proactive AI hybrid thinking smart glasses app.",
+  "main": "index.js",
+  "scripts": {
+    "build": "cd src/sdk && bun run build && cd ../config && bun run build && cd ../utils && bun run build && cd ../agents && bun run build && cd ../apps/dashboard-manager && bun run build && cd ../apps/flash && bun run build && cd ../apps/livecaptions && bun run build && cd ../apps/miraai && bun run build && cd ../apps/notify && bun run build && cd ../cloud && bun run build",
+    "dev": "ts-node-dev --respawn --pretty --transpile-only ./src/index.ts",
+    "docker:dev": "docker-compose -f docker-compose.dev.yml -p dev up -d",
+    "dev:stop": "docker-compose -f docker-compose.dev.yml -p dev down --timeout 5 || docker kill $(docker ps -q)",
+    "dev:logs": "docker-compose -f docker-compose.dev.yml -p dev logs -f",
+
+    "staging": "docker-compose -f docker-compose.staging.yml -p staging up -d",
+    "staging:stop": "docker-compose -f docker-compose.staging.yml -p staging down",
+    "staging:logs": "docker-compose -f docker-compose.yml -p staging logs -f",
+
+    "prod": "ts-node-dev --respawn --pretty --transpile-only ./src/index.ts",
+    "docker:prod": "docker-compose -f docker-compose.yml -p prod up -d",
+    "prod:stop": "docker-compose -f docker-compose.yml -p prod down",
+    "prod:logs": "docker-compose -f docker-compose.yml -p prod logs -f",
+
+    "logs:dev": "docker-compose -f docker-compose.dev.yml -p dev logs -f",
+    "logs:prod": "docker-compose -f docker-compose.yml -p prod logs -f"
+  },
+  "keywords": [],
+  "author": "Nicolo Micheletti",
+  "license": "ISC",
+  "dependencies": {
+    "@langchain/anthropic": "^0.3.13",
+    "@langchain/community": "^0.3.31",
+    "@langchain/core": "^0.3.40",
+    "@langchain/google-vertexai": "^0.1.8",
+    "docker-compose": "^1.1.1",
+    "express": "^4.21.2",
+    "langchain": "^0.3.19",
+    "microsoft-cognitiveservices-speech-sdk": "^1.42.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/ws": "^8.5.14",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^1.1.8",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,8 @@
+{
+    "tpa_name": "Mentra Merge",
+    "tpa_description": "Mentra Merge is a TPA that uses AI to help you merge your data.",
+    "tpa_icon": "https://mentra.ai/logo.png",
+    "tpa_color": "#000000",
+    "tpa_background_color": "#FFFFFF",
+    "tpa_border_color": "#000000"
+}
