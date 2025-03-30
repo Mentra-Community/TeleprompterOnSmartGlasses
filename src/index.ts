@@ -2,21 +2,18 @@
 import express from 'express';
 import WebSocket from 'ws';
 import path from 'path';
-import axios from 'axios';
 
 import {
   TpaConnectionInit,
-  DataStream,
   DisplayRequest,
   TpaSubscriptionUpdate,
   TpaToCloudMessageType,
-  StreamType,
-  CloudToGlassesMessageType,
   CloudToTpaMessageType,
   ViewType,
   LayoutType,
 } from './sdk';
 import { TranscriptProcessor } from './utils/src/text-wrapping/TranscriptProcessor';
+import { fetchSettings, getUserLineWidth, getUserNumberOfLines, getUserScrollSpeed, getUserCustomText } from './settings_handler';
 
 // TeleprompterManager class to handle teleprompter functionality
 class TeleprompterManager {
@@ -37,7 +34,7 @@ class TeleprompterManager {
     this.text = text || this.getDefaultText();
     this.lineWidth = lineWidth;
     this.numberOfLines = 4;
-    this.scrollSpeed = 150; // Default to 60 WPM (average reading speed)
+    this.scrollSpeed = scrollSpeed;
     this.scrollInterval = 500; // Update twice per second for smoother scrolling
     
     // Initialize transcript processor for text formatting
@@ -254,62 +251,6 @@ app.use(express.static(path.join(__dirname, './public')));
 // Track active sessions
 const activeSessions = new Map<string, WebSocket>();
 
-function convertLineWidth(width: string | number): number {
-  if (typeof width === 'number') return width;
-
-  switch (width.toLowerCase()) {
-    case 'very narrow': return 21;
-    case 'narrow': return 30;
-    case 'medium': return 38;
-    case 'wide': return 44;
-    case 'very wide': return 52;
-    default: return 38;
-  }
-}
-
-async function fetchAndApplySettings(sessionId: string, userId: string) {
-  try {
-    const response = await axios.get(`http://cloud/tpasettings/user/${PACKAGE_NAME}`, {
-      headers: { Authorization: `Bearer ${userId}` }
-    });
-    const settings = response.data.settings;
-    console.log(`Fetched settings for session ${sessionId}:`, settings);
-    
-    const lineWidthSetting = settings.find((s: any) => s.key === 'line_width');
-    const numberOfLinesSetting = settings.find((s: any) => s.key === 'number_of_lines');
-    const scrollSpeedSetting = settings.find((s: any) => s.key === 'scroll_speed');
-    const customTextSetting = settings.find((s: any) => s.key === 'custom_text');
-
-    // Apply settings with defaults
-    const lineWidth = lineWidthSetting ? convertLineWidth(lineWidthSetting.value) : 38;
-    const numberOfLines = numberOfLinesSetting ? Number(numberOfLinesSetting.value) : 3;
-    const scrollSpeed = scrollSpeedSetting ? Number(scrollSpeedSetting.value) : 0.5; // Default to 0.5 lines per interval
-    const customText = customTextSetting ? customTextSetting.value : '';
-    
-    // Create or update teleprompter manager
-    let teleprompterManager = userTeleprompterManagers.get(userId);
-    if (!teleprompterManager) {
-      teleprompterManager = new TeleprompterManager(customText, lineWidth, scrollSpeed);
-      userTeleprompterManagers.set(userId, teleprompterManager);
-    } else {
-      teleprompterManager.setLineWidth(lineWidth);
-      teleprompterManager.setNumberOfLines(numberOfLines);
-      teleprompterManager.setScrollSpeed(scrollSpeed);
-      if (customText) {
-        teleprompterManager.setText(customText);
-      }
-    }
-    
-    return teleprompterManager;
-  } catch (err) {
-    console.error(`Error fetching settings for session ${sessionId}:`, err);
-    // Fallback to default values.
-    const teleprompterManager = new TeleprompterManager('', 38, 60);
-    userTeleprompterManagers.set(userId, teleprompterManager);
-    return teleprompterManager;
-  }
-}
-
 // Handle webhook call from AugmentOS Cloud
 app.post('/webhook', async (req, res) => {
   try {
@@ -334,9 +275,24 @@ app.post('/webhook', async (req, res) => {
       ws.send(JSON.stringify(initMessage));
 
       // Fetch and apply settings for the session
-      await fetchAndApplySettings(sessionId, userId).catch(err =>
-        console.error(`Error in fetchAndApplySettings for session ${sessionId}:`, err)
-      );
+      await fetchSettings(userId);
+      
+      // Create or update teleprompter manager with user settings
+      const lineWidth = getUserLineWidth(userId);
+      const scrollSpeed = getUserScrollSpeed(userId);
+      const customText = getUserCustomText(userId);
+      
+      let teleprompterManager = userTeleprompterManagers.get(userId);
+      if (!teleprompterManager) {
+        teleprompterManager = new TeleprompterManager(customText, lineWidth, scrollSpeed);
+        userTeleprompterManagers.set(userId, teleprompterManager);
+      } else {
+        teleprompterManager.setLineWidth(lineWidth);
+        teleprompterManager.setScrollSpeed(scrollSpeed);
+        if (customText) {
+          teleprompterManager.setText(customText);
+        }
+      }
     });
 
     ws.on('message', (data: Buffer) => {
@@ -573,56 +529,28 @@ function refreshUserSessions(userId: string) {
   return sessionIds.size > 0;
 }
 
-app.post('/settings', (req, res) => {
+app.post('/settings', async (req, res) => {
   try {
     console.log('Received settings update for teleprompter:', req.body);
-    const { userIdForSettings, settings } = req.body;
+    const { userIdForSettings } = req.body;
     
-    // Extract settings
-    const lineWidthSetting = settings.find((s: any) => s.key === 'line_width');
-    const numberOfLinesSetting = settings.find((s: any) => s.key === 'number_of_lines');
-    const scrollSpeedSetting = settings.find((s: any) => s.key === 'scroll_speed');
-    const customTextSetting = settings.find((s: any) => s.key === 'custom_text');
-
-    // Extract values with defaults
-    const lineWidth = lineWidthSetting ? convertLineWidth(lineWidthSetting.value) : 38;
-    const numberOfLines = numberOfLinesSetting ? Number(numberOfLinesSetting.value) : 3;
-    const scrollSpeed = scrollSpeedSetting ? Number(scrollSpeedSetting.value) : 120;
+    // Fetch and apply new settings
+    await fetchSettings(userIdForSettings);
     
-    // Get custom text (either from settings or from existing manager if available)
-    let customText = '';
-    if (customTextSetting && customTextSetting.value) {
-      customText = customTextSetting.value;
-    } else {
-      // If no new text provided, try to get existing text
-      const existingManager = userTeleprompterManagers.get(userIdForSettings);
-      if (existingManager) {
-        // This is a hack to get the existing text - in a real implementation,
-        // you might want to add a getText() method to the TeleprompterManager class
-        const defaultText = new TeleprompterManager('', 38, 120).getDefaultText();
-        const currentText = existingManager.getCurrentVisibleText();
-        if (currentText !== defaultText) {
-          customText = currentText;
-        }
+    // Get updated settings
+    const lineWidth = getUserLineWidth(userIdForSettings);
+    const scrollSpeed = getUserScrollSpeed(userIdForSettings);
+    const customText = getUserCustomText(userIdForSettings);
+    
+    // Update teleprompter manager with new settings
+    let teleprompterManager = userTeleprompterManagers.get(userIdForSettings);
+    if (teleprompterManager) {
+      teleprompterManager.setLineWidth(lineWidth);
+      teleprompterManager.setScrollSpeed(scrollSpeed);
+      if (customText) {
+        teleprompterManager.setText(customText);
       }
     }
-    
-    // Instead of updating parameters individually, create a new manager
-    const newTeleprompterManager = new TeleprompterManager(
-      customText,
-      lineWidth,
-      scrollSpeed
-    );
-    
-    // Replace the old manager with the new one
-    userTeleprompterManagers.set(userIdForSettings, newTeleprompterManager);
-    
-    console.log(`Created new teleprompter manager for user ${userIdForSettings} with settings: 
-      lineWidth: ${lineWidth}
-      numberOfLines: ${numberOfLines}
-      scrollSpeed: ${scrollSpeed} WPM
-      text length: ${customText.length} characters
-    `);
     
     // Refresh all active sessions for this user
     refreshUserSessions(userIdForSettings);
