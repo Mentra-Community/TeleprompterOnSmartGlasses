@@ -29,6 +29,8 @@ class TeleprompterManager {
   private avgWordsPerLine: number = 0;
   private wordsPerInterval: number = 0; // How many words to advance per interval
   private startTime: number = Date.now(); // Track when teleprompter started for stopwatch
+  private endTimestamp: number | null = null; // Track when we reach the end of text
+  private showingEndMessage: boolean = false; // Track if we're showing the END OF TEXT message
   
   constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120) {
     this.text = text || this.getDefaultText();
@@ -148,6 +150,8 @@ class TeleprompterManager {
   resetPosition(): void {
     this.currentLinePosition = 0;
     this.linePositionAccumulator = 0;
+    this.endTimestamp = null;
+    this.showingEndMessage = false;
     this.resetStopwatch(); // Reset the stopwatch when position is reset
   }
 
@@ -173,9 +177,10 @@ class TeleprompterManager {
       this.currentLinePosition += linesToAdvance;
     }
     
-    // Cap at the end of text
-    if (this.currentLinePosition >= this.lines.length) {
-      this.currentLinePosition = this.lines.length;
+    // Cap at the end of text (when last line is at bottom of display)
+    const maxPosition = this.lines.length - this.numberOfLines;
+    if (this.currentLinePosition >= maxPosition) {
+      this.currentLinePosition = maxPosition;
     }
   }
 
@@ -195,21 +200,40 @@ class TeleprompterManager {
     }
     
     // Add progress indicator with stopwatch and current time
-    const progressPercent = Math.min(100, Math.round((this.currentLinePosition / this.lines.length) * 100));
+    const progressPercent = Math.min(100, Math.round((this.currentLinePosition / (this.lines.length - this.numberOfLines)) * 100));
     const elapsedTime = this.getElapsedTime();
     const currentTime = this.getCurrentTime();
     const progressText = `[${progressPercent}%] | ${elapsedTime}`;
     
     // Check if we're at the end
     if (this.isAtEnd()) {
-      return `${progressText}\n${visibleLines.join('\n')}\n\n*** END OF TEXT ***`;
+      // If we've been at the end for less than 3 seconds, show the last text
+      if (this.endTimestamp) {
+        const timeAtEnd = Date.now() - this.endTimestamp;
+        if (timeAtEnd < 10000) {
+          return `${progressText}\n${visibleLines.join('\n')}`;
+        }
+        // After 3 seconds, start showing END OF TEXT
+        this.showingEndMessage = true;
+      }
+    }
+    
+    // If we're showing the end message, show it
+    if (this.showingEndMessage) {
+      return `${progressText}\n\n*** END OF TEXT ***`;
     }
     
     return `${progressText}\n${visibleLines.join('\n')}`;
   }
 
   isAtEnd(): boolean {
-    return this.currentLinePosition >= this.lines.length - this.numberOfLines;
+    // Consider at end when last line is at bottom of display
+    const isEnd = this.currentLinePosition >= this.lines.length - this.numberOfLines;
+    if (isEnd && this.endTimestamp === null) {
+      this.endTimestamp = Date.now();
+      console.log('Reached end of text, starting 3 second countdown');
+    }
+    return isEnd;
   }
 
   // Get total number of lines for debugging
@@ -229,6 +253,10 @@ class TeleprompterManager {
   // Get scroll speed in WPM
   getScrollSpeed(): number {
     return this.scrollSpeed;
+  }
+
+  isShowingEndMessage(): boolean {
+    return this.showingEndMessage;
   }
 }
 
@@ -410,8 +438,6 @@ function startScrolling(sessionId: string, userId: string, ws: WebSocket) {
   // Show initial text
   showTextToUser(sessionId, ws, teleprompterManager.getCurrentVisibleText());
   
-  // console.log(`[Session ${sessionId}]: Starting teleprompter with ${teleprompterManager.getTotalSegments()} total segments`);
-  
   // Create interval to scroll the text
   const scrollInterval = setInterval(() => {
     // Advance the position
@@ -423,25 +449,24 @@ function startScrolling(sessionId: string, userId: string, ws: WebSocket) {
     // Show the text
     showTextToUser(sessionId, ws, textToDisplay);
     
-    // // Check if we've reached the end
-    // if (teleprompterManager.isAtEnd()) {
-    //   // Show a message that we've reached the end
-    //   console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
+    // Check if we've reached the end
+    if (teleprompterManager.isAtEnd()) {
+      // Stop the scrolling but keep showing text
+      stopScrolling(sessionId);
+      console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
       
-    //   // After a brief pause, restart from the beginning
-    //   setTimeout(() => {
-    //     stopScrolling(sessionId);
-    //     teleprompterManager.resetPosition();
+      // Create a new interval to keep showing text after scrolling stops
+      const endInterval = setInterval(() => {
+        const endText = teleprompterManager.getCurrentVisibleText();
+        showTextToUser(sessionId, ws, endText);
         
-    //     // Display a message that we're restarting
-    //     showTextToUser(sessionId, ws, "Restarting teleprompter...");
-        
-    //     // Restart after a brief pause
-    //     setTimeout(() => {
-    //       startScrolling(sessionId, userId, ws);
-    //     }, 2000);
-    //   }, 5000); // Show the end message for 5 seconds
-    // }
+        // If we're showing the end message, stop this interval
+        if (teleprompterManager.isShowingEndMessage()) {
+          clearInterval(endInterval);
+          console.log(`[Session ${sessionId}]: Finished showing end message`);
+        }
+      }, 500); // Update every 500ms
+    }
   }, teleprompterManager.getScrollInterval());
   
   // Store the interval
