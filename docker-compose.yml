@@ -21,7 +21,7 @@ services:
       - ./logs:/app/logs
     command: bash -c "bun install && bun run prod"
     networks:
-      - augmentos-network
+      - augmentos-network-dev
     labels:
       com.datadoghq.ad.logs: '[{"source": "teleprompter", "service": "teleprompter"}]'
 
@@ -55,10 +55,10 @@ services:
   #     - augmentos-network-dev
 
 networks:
-  augmentos-network:
+  augmentos-network-dev:
     driver: bridge
     external: true
-    name: augmentos-network
+    name: augmentos-network-dev
 
 volumes:
   node_modules:
