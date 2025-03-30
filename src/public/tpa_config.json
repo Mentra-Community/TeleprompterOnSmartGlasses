@@ -5,6 +5,16 @@
     "settings": [
         {
             "type": "group",
+            "title": "Text Input"
+        },
+        {
+            "key": "input_text",
+            "type": "text",
+            "label": "Text",
+            "defaultValue": "Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content through the settings. The teleprompter will automatically scroll text at a comfortable reading pace."
+        },
+        {
+            "type": "group",
             "title": "General settings"
         },
         {
