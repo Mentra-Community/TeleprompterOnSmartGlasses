@@ -1,13 +1,44 @@
-# I sometimes just spam old version or broken code in files in a folder called old or wip...
-# This is to ignore those files. and folders
-wip/
-old/
-dist/
+node_modules
+dist
+# Build output
+build/
+lib/
+out/
 
-# Ignore the .env file
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Environment variables
 .env
 .env.local
-node_modules/
-./env
-.ssh
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor directories and files
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
+
+# Coverage directory
+coverage/
+
+# Temporary files
+tmp/
+temp/
+
+# Word frequency lists (using submodule instead)
+src/word_frequency_lists/

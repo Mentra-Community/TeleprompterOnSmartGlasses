@@ -1,0 +1,24 @@
+services:
+  teleprompter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: teleprompter
+    ports:
+      - "9025:80"
+    env_file:
+      - ../.env
+    environment:
+      - PORT=80
+      - CLOUD_HOST_NAME=cloud
+      - NODE_ENV=production
+      - PREPARE_FREQUENCY_WORDS=true
+    # restart: unless-stopped
+    restart: "no"
+    command: ["./scripts/docker-startup.sh", "bun", "run", "start"]
+
+    # logging:
+    #   driver: "json-file"
+    #   options:
+    #     max-size: "10m"
+    #     max-file: "3"
