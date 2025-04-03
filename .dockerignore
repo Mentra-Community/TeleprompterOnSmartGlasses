@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.github
+.vscode
+*.log
+npm-debug.log*
+# .env is needed for development
+# .env
+.env.*
+!.env
+.DS_Store
+README.md
+.gitignore
+CLAUDE.md

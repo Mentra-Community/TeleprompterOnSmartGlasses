@@ -1,19 +1,18 @@
 // augmentos_cloud/packages/apps/teleprompter/src/index.ts
 import express from 'express';
-import WebSocket from 'ws';
 import path from 'path';
-
 import {
-  TpaConnectionInit,
-  DisplayRequest,
-  TpaSubscriptionUpdate,
-  TpaToCloudMessageType,
-  CloudToTpaMessageType,
+  TpaServer,
+  TpaSession,
   ViewType,
-  LayoutType,
-} from './sdk';
+} from '@augmentos/sdk';
 import { TranscriptProcessor } from './utils/src/text-wrapping/TranscriptProcessor';
 import { fetchSettings, getUserLineWidth, getUserNumberOfLines, getUserScrollSpeed, getUserCustomText } from './settings_handler';
+
+// Configuration constants
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
+const PACKAGE_NAME = 'com.augmentos.teleprompter';
+const AUGMENTOS_API_KEY = process.env.AUGMENTOS_API_KEY || 'test_key';
 
 // TeleprompterManager class to handle teleprompter functionality
 class TeleprompterManager {
@@ -260,338 +259,324 @@ class TeleprompterManager {
   }
 }
 
-const app = express();
-const PORT = 80; // Default http port.
-const PACKAGE_NAME = 'com.augmentos.teleprompter';
-const API_KEY = 'test_key'; // In production, this would be securely stored
+/**
+ * TeleprompterApp - Main application class for the Teleprompter
+ * that extends TpaServer for seamless integration with AugmentOS
+ */
+class TeleprompterApp extends TpaServer {
+  // Maps to track user teleprompter managers and active scrollers
+  private userTeleprompterManagers = new Map<string, TeleprompterManager>();
+  private sessionScrollers = new Map<string, NodeJS.Timeout>();
 
-// Track user sessions and their teleprompter managers
-const userTeleprompterManagers: Map<string, TeleprompterManager> = new Map();
-const userSessions = new Map<string, Set<string>>(); // userId -> Set<sessionId>
-const sessionScrollers: Map<string, NodeJS.Timeout> = new Map(); // sessionId -> scroll interval timer
+  constructor() {
+    if (!AUGMENTOS_API_KEY) {
+      throw new Error('AUGMENTOS_API_KEY is not set');
+    }
+  
+    super({
+      packageName: PACKAGE_NAME,
+      apiKey: AUGMENTOS_API_KEY as string,
+      port: PORT,
+      publicDir: path.join(__dirname, './public')
+    });
+    
+    // Add settings endpoint
+    const expressApp = this.getExpressApp();
+    expressApp.post('/settings', this.handleSettingsUpdate.bind(this));
+  }
 
-// Parse JSON bodies
-app.use(express.json());
-
-// Serve static files from the public directory
-app.use(express.static(path.join(__dirname, './public')));
-
-// Track active sessions
-const activeSessions = new Map<string, WebSocket>();
-
-// Handle webhook call from AugmentOS Cloud
-app.post('/webhook', async (req, res) => {
-  try {
-    const { sessionId, userId } = req.body;
+  /**
+   * Called by TpaServer when a new session is created
+   */
+  protected async onSession(session: TpaSession, sessionId: string, userId: string): Promise<void> {
     console.log(`\n\n📜📜📜 Received teleprompter session request for user ${userId}, session ${sessionId}\n\n`);
 
-    // Start WebSocket connection to cloud
-    const ws = new WebSocket(`ws://cloud/tpa-ws`);
-
-    ws.on('open', async () => {
-      console.log(`\n[Session ${sessionId}]\n connected to augmentos-cloud\n`);
-      // Send connection init with session ID
-      const initMessage: TpaConnectionInit = {
-        type: TpaToCloudMessageType.CONNECTION_INIT,
-        sessionId,
-        packageName: PACKAGE_NAME,
-        apiKey: API_KEY
-      };
-
-      console.log(`Sending connection init message to augmentos-cloud for session ${sessionId}`);
-      console.log(JSON.stringify(initMessage));
-      ws.send(JSON.stringify(initMessage));
-
-      // Fetch and apply settings for the session
+    try {
+      // Fetch and apply user settings
       await fetchSettings(userId);
       
-      // Create or update teleprompter manager with user settings
+      // Get user settings
       const lineWidth = getUserLineWidth(userId);
       const scrollSpeed = getUserScrollSpeed(userId);
+      const numberOfLines = getUserNumberOfLines(userId);
       const customText = getUserCustomText(userId);
       
-      let teleprompterManager = userTeleprompterManagers.get(userId);
+      // Create or update teleprompter manager
+      let teleprompterManager = this.userTeleprompterManagers.get(userId);
       if (!teleprompterManager) {
         teleprompterManager = new TeleprompterManager(customText, lineWidth, scrollSpeed);
-        userTeleprompterManagers.set(userId, teleprompterManager);
+        teleprompterManager.setNumberOfLines(numberOfLines);
+        this.userTeleprompterManagers.set(userId, teleprompterManager);
       } else {
         teleprompterManager.setLineWidth(lineWidth);
         teleprompterManager.setScrollSpeed(scrollSpeed);
+        teleprompterManager.setNumberOfLines(numberOfLines);
         if (customText) {
           teleprompterManager.setText(customText);
         }
       }
-    });
-
-    ws.on('message', (data: Buffer) => {
-      try {
-        const message = JSON.parse(data.toString());
-        handleMessage(sessionId, userId, ws, message);
-      } catch (error) {
-        console.error('Error parsing message:', error);
-      }
-    });
-
-    ws.on('close', () => {
-      console.log(`Session ${sessionId} disconnected`);
       
-      // Clean up WebSocket connection
-      activeSessions.delete(sessionId);
+      // Reset position to start
+      teleprompterManager.resetPosition();
       
-      // Remove session from user's sessions map
-      if (userSessions.has(userId)) {
-        const sessions = userSessions.get(userId)!;
-        sessions.delete(sessionId);
-        if (sessions.size === 0) {
-          userSessions.delete(userId);
-          // If no more sessions for this user, clean up the teleprompter manager
-          userTeleprompterManagers.delete(userId);
+      // Show initial text
+      this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
+      
+      // Start scrolling
+      this.startScrolling(session, sessionId, userId);
+      
+    } catch (error) {
+      console.error('Error initializing session:', error);
+      // Create default teleprompter manager if there was an error
+      const teleprompterManager = new TeleprompterManager('', 38, 120);
+      this.userTeleprompterManagers.set(userId, teleprompterManager);
+      
+      // Show initial text
+      this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
+      
+      // Start scrolling
+      this.startScrolling(session, sessionId, userId);
+    }
+  }
+
+  /**
+   * Called by TpaServer when a session is stopped
+   */
+  protected async onStop(sessionId: string, userId: string, reason: string): Promise<void> {
+    console.log(`Session ${sessionId} stopped: ${reason}`);
+    
+    // Stop scrolling for this session
+    this.stopScrolling(sessionId);
+    
+    // Clean up teleprompter manager if this was the last session for this user
+    // First check if we have any other active sessions for this user
+    let hasOtherSessions = false;
+    
+    try {
+      const activeSessions = (this as any).getSessions?.() || [];
+      
+      for (const [activeSessionId, session] of Object.entries(activeSessions)) {
+        if (activeSessionId !== sessionId) {
+          const sessionObj = session as any;
+          if (sessionObj.userId === userId || 
+              sessionObj.user === userId ||
+              sessionObj.getUserId?.() === userId) {
+            hasOtherSessions = true;
+            break;
+          }
         }
-      } else {
-        console.log(`Session ${sessionId} not found in userSessions map for user ${userId}`);
       }
-      
-      // Clear any active scroller for this session
-      stopScrolling(sessionId);
-
-      // Clear the transcript history
-      const teleprompterManager = userTeleprompterManagers.get(userId);
+    } catch (e) {
+      console.error('Error accessing sessions:', e);
+    }
+    
+    // If no other sessions, clean up the teleprompter manager
+    if (!hasOtherSessions) {
+      const teleprompterManager = this.userTeleprompterManagers.get(userId);
       if (teleprompterManager) {
         teleprompterManager.clear();
         teleprompterManager.resetPosition();
-        userTeleprompterManagers.delete(userId);
+        this.userTeleprompterManagers.delete(userId);
       }
+    }
+  }
+  
+  /**
+   * Displays text to the user using the SDK's layout API
+   */
+  private showTextToUser(session: TpaSession, sessionId: string, text: string): void {
+    console.log(`[Session ${sessionId}]: Text to show: \n${text}`);
 
-      // Force garbage collection for any remaining references
-      ws.removeAllListeners();
-      
-      console.log(`Cleanup completed for session ${sessionId}, user ${userId}`);
+    // Use the SDK's layout API to display the text
+    session.layouts.showTextWall(text, {
+      view: ViewType.MAIN,
+      durationMs: 10 * 1000 // 10 seconds timeout in case updates stop
     });
-
-    // Track this session for the user
-    if (!userSessions.has(userId)) {
-      userSessions.set(userId, new Set());
+  }
+  
+  /**
+   * Starts scrolling the teleprompter text for a session
+   */
+  private startScrolling(session: TpaSession, sessionId: string, userId: string): void {
+    // Check if we already have a scroller for this session
+    if (this.sessionScrollers.has(sessionId)) {
+      this.stopScrolling(sessionId);
     }
-    userSessions.get(userId)!.add(sessionId);
-
-    activeSessions.set(sessionId, ws);
     
-    res.status(200).json({ status: 'connecting' });
-  } catch (error) {
-    console.error('Error handling webhook:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-function handleMessage(sessionId: string, userId: string, ws: WebSocket, message: any) {
-  switch (message.type) {
-    case CloudToTpaMessageType.CONNECTION_ACK: {
-      // Connection acknowledged, start teleprompter
-      console.log(`Session ${sessionId} connected, starting teleprompter`);
-      
-      // Subscribe to control messages (if needed)
-      const subMessage: TpaSubscriptionUpdate = {
-        type: TpaToCloudMessageType.SUBSCRIPTION_UPDATE,
-        packageName: PACKAGE_NAME,
-        sessionId,
-        subscriptions: []
-      };
-      ws.send(JSON.stringify(subMessage));
-      
-      // Start the teleprompter after a brief delay
-      setTimeout(() => {
-        startScrolling(sessionId, userId, ws);
-      }, 1000);
-      
-      break;
+    // Get teleprompter manager for this user
+    const teleprompterManager = this.userTeleprompterManagers.get(userId);
+    if (!teleprompterManager) {
+      console.error(`No teleprompter manager found for user ${userId}, session ${sessionId}`);
+      return;
     }
-
-    case CloudToTpaMessageType.DATA_STREAM: {
-      // Handle any control messages if needed
-      break;
-    }
-
-    default:
-      console.log('Unknown message type:', message.type);
-  }
-}
-
-/**
- * Starts scrolling the teleprompter text for a session
- */
-function startScrolling(sessionId: string, userId: string, ws: WebSocket) {
-  // Check if we already have a scroller for this session
-  if (sessionScrollers.has(sessionId)) {
-    stopScrolling(sessionId);
-  }
-  
-  // Get or create teleprompter manager for this user
-  let teleprompterManager = userTeleprompterManagers.get(userId);
-  if (!teleprompterManager) {
-    teleprompterManager = new TeleprompterManager('', 38, 60);
-    userTeleprompterManagers.set(userId, teleprompterManager);
-  }
-  
-  // Reset position to start
-  teleprompterManager.resetPosition();
-  
-  // Show initial text
-  showTextToUser(sessionId, ws, teleprompterManager.getCurrentVisibleText());
-  
-  // Create interval to scroll the text
-  const scrollInterval = setInterval(() => {
-    // Advance the position
-    teleprompterManager.advancePosition();
     
-    // Get current text to display
-    const textToDisplay = teleprompterManager.getCurrentVisibleText();
-    
-    // Show the text
-    showTextToUser(sessionId, ws, textToDisplay);
-    
-    // Check if we've reached the end
-    if (teleprompterManager.isAtEnd()) {
-      // Stop the scrolling but keep showing text
-      stopScrolling(sessionId);
-      console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
+    // Create interval to scroll the text
+    const scrollInterval = setInterval(() => {
+      // Advance the position
+      teleprompterManager.advancePosition();
       
-      // Create a new interval to keep showing text after scrolling stops
-      const endInterval = setInterval(() => {
-        const endText = teleprompterManager.getCurrentVisibleText();
-        showTextToUser(sessionId, ws, endText);
+      // Get current text to display
+      const textToDisplay = teleprompterManager.getCurrentVisibleText();
+      
+      // Show the text
+      this.showTextToUser(session, sessionId, textToDisplay);
+      
+      // Check if we've reached the end
+      if (teleprompterManager.isAtEnd()) {
+        // Stop the scrolling but keep showing text
+        this.stopScrolling(sessionId);
+        console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
         
-        // If we're showing the end message, stop this interval
-        if (teleprompterManager.isShowingEndMessage()) {
-          clearInterval(endInterval);
-          console.log(`[Session ${sessionId}]: Finished showing end message`);
-        }
-      }, 500); // Update every 500ms
-    }
-  }, teleprompterManager.getScrollInterval());
-  
-  // Store the interval
-  sessionScrollers.set(sessionId, scrollInterval);
-}
-
-/**
- * Stops scrolling for a session
- */
-function stopScrolling(sessionId: string) {
-  const interval = sessionScrollers.get(sessionId);
-  if (interval) {
-    clearInterval(interval);
-    sessionScrollers.delete(sessionId);
-    console.log(`[Session ${sessionId}]: Stopped scrolling`);
-  }
-}
-
-/**
- * Sends a display event (text) to the cloud.
- */
-function showTextToUser(sessionId: string, ws: WebSocket, text: string) {
-  console.log(`[Session ${sessionId}]: Text to show: \n${text}`);
-
-  const displayRequest: DisplayRequest = {
-    type: TpaToCloudMessageType.DISPLAY_REQUEST,
-    view: ViewType.MAIN,
-    packageName: PACKAGE_NAME,
-    sessionId,
-    layout: {
-      layoutType: LayoutType.TEXT_WALL,
-      text: text
-    },
-    timestamp: new Date(),
-    durationMs: 10 * 1000, // 10 seconds timeout in case updates stop
-    forceDisplay: true
-  };
-
-  ws.send(JSON.stringify(displayRequest));
-}
-
-/**
- * Refreshes all sessions for a user after settings changes.
- */
-function refreshUserSessions(userId: string) {
-  const sessionIds = userSessions.get(userId);
-  if (!sessionIds || sessionIds.size === 0) {
-    console.log(`No active sessions found for user ${userId}`);
-    return false;
-  }
-  
-  console.log(`Refreshing ${sessionIds.size} sessions for user ${userId}`);
-  
-  // Get the teleprompter manager
-  const teleprompterManager = userTeleprompterManagers.get(userId);
-  if (!teleprompterManager) {
-    console.log(`No teleprompter manager found for user ${userId}`);
-    return false;
-  }
-  
-  // Refresh each session
-  for (const sessionId of sessionIds) {
-    const ws = activeSessions.get(sessionId);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      console.log(`Refreshing session ${sessionId}`);
-      
-      // Stop current scrolling
-      stopScrolling(sessionId);
-      
-      // Show a message about settings update
-      showTextToUser(sessionId, ws, "Settings updated. Restarting teleprompter...");
-      
-      // Restart with new settings after a brief delay
-      setTimeout(() => {
-        startScrolling(sessionId, userId, ws);
-      }, 1500);
-    } else {
-      console.log(`Session ${sessionId} is not open, removing from tracking`);
-      activeSessions.delete(sessionId);
-      sessionIds.delete(sessionId);
-      stopScrolling(sessionId);
-    }
-  }
-  
-  return sessionIds.size > 0;
-}
-
-app.post('/settings', async (req, res) => {
-  try {
-    console.log('Received settings update for teleprompter:', req.body);
-    const { userIdForSettings } = req.body;
-    
-    // Fetch and apply new settings
-    await fetchSettings(userIdForSettings);
-    
-    // Get updated settings
-    const lineWidth = getUserLineWidth(userIdForSettings);
-    const scrollSpeed = getUserScrollSpeed(userIdForSettings);
-    const customText = getUserCustomText(userIdForSettings);
-    
-    // Update teleprompter manager with new settings
-    let teleprompterManager = userTeleprompterManagers.get(userIdForSettings);
-    if (teleprompterManager) {
-      teleprompterManager.setLineWidth(lineWidth);
-      teleprompterManager.setScrollSpeed(scrollSpeed);
-      if (customText) {
-        teleprompterManager.setText(customText);
+        // Create a new interval to keep showing text after scrolling stops
+        const endInterval = setInterval(() => {
+          const endText = teleprompterManager.getCurrentVisibleText();
+          this.showTextToUser(session, sessionId, endText);
+          
+          // If we're showing the end message, stop this interval
+          if (teleprompterManager.isShowingEndMessage()) {
+            clearInterval(endInterval);
+            console.log(`[Session ${sessionId}]: Finished showing end message`);
+          }
+        }, 500); // Update every 500ms
       }
+    }, teleprompterManager.getScrollInterval());
+    
+    // Store the interval
+    this.sessionScrollers.set(sessionId, scrollInterval);
+  }
+  
+  /**
+   * Stops scrolling for a session
+   */
+  private stopScrolling(sessionId: string): void {
+    const interval = this.sessionScrollers.get(sessionId);
+    if (interval) {
+      clearInterval(interval);
+      this.sessionScrollers.delete(sessionId);
+      console.log(`[Session ${sessionId}]: Stopped scrolling`);
+    }
+  }
+  
+  /**
+   * Refreshes all sessions for a user after settings changes
+   */
+  private refreshUserSessions(userId: string): boolean {
+    let sessionsUpdated = 0;
+    
+    try {
+      // Get all sessions for this user from the TpaServer
+      const userSessions: Array<[string, TpaSession]> = [];
+      const activeSessions = (this as any).getSessions?.() || [];
+      
+      for (const [sessionId, session] of Object.entries(activeSessions)) {
+        const sessionObj = session as any;
+        if (sessionObj.userId === userId || 
+            sessionObj.user === userId ||
+            sessionObj.getUserId?.() === userId) {
+          userSessions.push([sessionId, session as TpaSession]);
+        }
+      }
+      
+      if (userSessions.length === 0) {
+        console.log(`No active sessions found for user ${userId}`);
+        return false;
+      }
+      
+      console.log(`Refreshing ${userSessions.length} sessions for user ${userId}`);
+      
+      // Get the teleprompter manager
+      const teleprompterManager = this.userTeleprompterManagers.get(userId);
+      if (!teleprompterManager) {
+        console.log(`No teleprompter manager found for user ${userId}`);
+        return false;
+      }
+      
+      // Refresh each session
+      for (const [sessionId, session] of userSessions) {
+        // Stop current scrolling
+        this.stopScrolling(sessionId);
+        
+        // Show a message about settings update
+        this.showTextToUser(session, sessionId, "Settings updated. Restarting teleprompter...");
+        
+        // Restart with new settings after a brief delay
+        setTimeout(() => {
+          this.startScrolling(session, sessionId, userId);
+        }, 1500);
+        
+        sessionsUpdated++;
+      }
+    } catch (e) {
+      console.error('Error refreshing user sessions:', e);
     }
     
-    // Refresh all active sessions for this user
-    refreshUserSessions(userIdForSettings);
-    
-    res.status(200).json({ status: 'settings updated' });
-  } catch (error) {
-    console.error('Error updating settings:', error);
-    res.status(500).json({ error: 'Internal server error updating settings' });
+    return sessionsUpdated > 0;
   }
-});
+  
+  /**
+   * Handles settings updates via the /settings endpoint
+   */
+  private async handleSettingsUpdate(req: any, res: any): Promise<void> {
+    try {
+      console.log('Received settings update for teleprompter:', req.body);
+      const { userIdForSettings } = req.body;
+      
+      if (!userIdForSettings) {
+        return res.status(400).json({ error: 'Missing userIdForSettings in the request' });
+      }
+      
+      // Fetch and apply new settings
+      await fetchSettings(userIdForSettings);
+      
+      // Get updated settings
+      const lineWidth = getUserLineWidth(userIdForSettings);
+      const scrollSpeed = getUserScrollSpeed(userIdForSettings);
+      const numberOfLines = getUserNumberOfLines(userIdForSettings);
+      const customText = getUserCustomText(userIdForSettings);
+      
+      // Update teleprompter manager with new settings
+      let teleprompterManager = this.userTeleprompterManagers.get(userIdForSettings);
+      if (teleprompterManager) {
+        teleprompterManager.setLineWidth(lineWidth);
+        teleprompterManager.setScrollSpeed(scrollSpeed);
+        teleprompterManager.setNumberOfLines(numberOfLines);
+        if (customText) {
+          teleprompterManager.setText(customText);
+        }
+      } else {
+        // Create new teleprompter manager if none exists
+        teleprompterManager = new TeleprompterManager(customText, lineWidth, scrollSpeed);
+        teleprompterManager.setNumberOfLines(numberOfLines);
+        this.userTeleprompterManagers.set(userIdForSettings, teleprompterManager);
+      }
+      
+      // Refresh all active sessions for this user
+      const refreshed = this.refreshUserSessions(userIdForSettings);
+      
+      if (refreshed) {
+        res.status(200).json({ status: 'settings updated and sessions refreshed' });
+      } else {
+        res.status(200).json({ status: 'settings updated, no active sessions to refresh' });
+      }
+    } catch (error) {
+      console.error('Error updating settings:', error);
+      res.status(500).json({ error: 'Internal server error updating settings' });
+    }
+  }
+}
 
-// Add a route to verify the server is running
-app.get('/health', (req, res) => {
+// Create and start the app
+const teleprompterApp = new TeleprompterApp();
+
+// Add health check endpoint
+const expressApp = teleprompterApp.getExpressApp();
+expressApp.get('/health', (req, res) => {
   res.json({ status: 'healthy', app: PACKAGE_NAME });
 });
 
-app.listen(PORT, () => {
+// Start the server
+teleprompterApp.start().then(() => {
   console.log(`${PACKAGE_NAME} server running on port ${PORT}`);
+}).catch(error => {
+  console.error('Failed to start server:', error);
 });

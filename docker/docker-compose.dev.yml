@@ -1,0 +1,37 @@
+services:
+  teleprompter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    container_name: teleprompter-dev
+    ports:
+      - "8026:80"
+    volumes:
+      - ..:/app
+      - /app/node_modules 
+      # We're preventing the FrequencyWords directory from being mounted from the host
+      # This allows the Docker container to use its own copy
+    env_file:
+      - ../.env
+    environment:
+      - PORT=80
+      - NODE_ENV=development
+      - CLOUD_HOST_NAME=cloud
+      # Flag to tell the application to download/prepare frequency words at runtime if needed
+      - PREPARE_FREQUENCY_WORDS=true
+    command: ["./scripts/docker-startup.sh", "bun", "--hot", "src/index.ts"]
+    restart: "no"
+    stdin_open: true
+    tty: true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - augmentos-network-dev
+
+networks:
+  augmentos-network-dev:
+    external: true
+    name: augmentos-network-dev
