@@ -165,28 +165,43 @@ export class TranscriptProcessor {
   // Wrap text into lines based on max line length
   public wrapText(text: string, maxLineLength: number): string[] {
     const result: string[] = [];
-    let remainingText = text.trim();
+    // Split the text by newlines first
+    const lines = text.split(/\r?\n/);
     
-    while (remainingText.length > 0) {
-      if (remainingText.length <= maxLineLength) {
-        result.push(remainingText);
-        break;
-      } else {
-        let splitIndex = maxLineLength;
-        // move splitIndex left until we find a space
-        while (splitIndex > 0 && remainingText.charAt(splitIndex) !== " ") {
-          splitIndex--;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // If this isn't the last line, we'll add a newline marker after processing this line
+      const isLastLine = i === lines.length - 1;
+      
+      if (line.length > 0) {
+        let remainingText = line;
+        while (remainingText.length > 0) {
+          if (remainingText.length <= maxLineLength) {
+            result.push(remainingText);
+            break;
+          } else {
+            let splitIndex = maxLineLength;
+            while (splitIndex > 0 && remainingText.charAt(splitIndex) !== " ") {
+              splitIndex--;
+            }
+            if (splitIndex === 0) {
+              splitIndex = maxLineLength;
+            }
+            
+            const chunk = remainingText.substring(0, splitIndex).trim();
+            result.push(chunk);
+            remainingText = remainingText.substring(splitIndex).trim();
+          }
         }
-        // If we didn't find a space, force split
-        if (splitIndex === 0) {
-          splitIndex = maxLineLength;
-        }
-
-        const chunk = remainingText.substring(0, splitIndex).trim();
-        result.push(chunk);
-        remainingText = remainingText.substring(splitIndex).trim();
+      }
+      
+      // Add newline marker between lines, but not after the last line
+      if (!isLastLine) {
+        result.push("\n");
       }
     }
+    
     return result;
   }
 

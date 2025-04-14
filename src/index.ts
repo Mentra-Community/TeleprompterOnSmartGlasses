@@ -11,8 +11,8 @@ import { fetchSettings, getUserLineWidth, getUserNumberOfLines, getUserScrollSpe
 
 // Configuration constants
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
-const PACKAGE_NAME = 'com.augmentos.teleprompter';
-const AUGMENTOS_API_KEY = process.env.AUGMENTOS_API_KEY || 'test_key';
+const PACKAGE_NAME = '';
+const AUGMENTOS_API_KEY = process.env.AUGMENTOS_API_KEY || '';
 
 // TeleprompterManager class to handle teleprompter functionality
 class TeleprompterManager {
@@ -30,6 +30,8 @@ class TeleprompterManager {
   private startTime: number = Date.now(); // Track when teleprompter started for stopwatch
   private endTimestamp: number | null = null; // Track when we reach the end of text
   private showingEndMessage: boolean = false; // Track if we're showing the END OF TEXT message
+  private showingFinalLine: boolean = false; // Track if we're showing the final line
+  private finalLineTimestamp: number | null = null; // Track when we started showing the final line
   
   constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120) {
     this.text = text || this.getDefaultText();
@@ -151,6 +153,8 @@ class TeleprompterManager {
     this.linePositionAccumulator = 0;
     this.endTimestamp = null;
     this.showingEndMessage = false;
+    this.showingFinalLine = false;
+    this.finalLineTimestamp = null;
     this.resetStopwatch(); // Reset the stopwatch when position is reset
   }
 
@@ -206,20 +210,38 @@ class TeleprompterManager {
     
     // Check if we're at the end
     if (this.isAtEnd()) {
-      // If we've been at the end for less than 3 seconds, show the last text
-      if (this.endTimestamp) {
-        const timeAtEnd = Date.now() - this.endTimestamp;
-        if (timeAtEnd < 10000) {
+      // If we haven't started showing the final line yet, start now
+      if (!this.showingFinalLine && !this.showingEndMessage) {
+        this.showingFinalLine = true;
+        this.finalLineTimestamp = Date.now();
+        return `${progressText}\n${visibleLines.join('\n')}`;
+      }
+      
+      // If we're showing the final line, check if it's been 5 seconds
+      if (this.showingFinalLine && this.finalLineTimestamp) {
+        const timeAtFinalLine = Date.now() - this.finalLineTimestamp;
+        if (timeAtFinalLine < 5000) { // Show final line for 5 seconds
           return `${progressText}\n${visibleLines.join('\n')}`;
         }
-        // After 3 seconds, start showing END OF TEXT
+        // After 5 seconds, switch to showing END OF TEXT
+        this.showingFinalLine = false;
         this.showingEndMessage = true;
+        this.endTimestamp = Date.now();
       }
-    }
-    
-    // If we're showing the end message, show it
-    if (this.showingEndMessage) {
-      return `${progressText}\n\n*** END OF TEXT ***`;
+      
+      // If we're showing the end message, check if it's been 10 seconds
+      if (this.showingEndMessage && this.endTimestamp) {
+        const timeAtEnd = Date.now() - this.endTimestamp;
+        if (timeAtEnd < 10000) { // Show END OF TEXT for 10 seconds
+          return `${progressText}\n\n*** END OF TEXT ***`;
+        }
+        // After 10 seconds, reset everything
+        this.showingEndMessage = false;
+        this.endTimestamp = null;
+        this.finalLineTimestamp = null;
+        this.showingFinalLine = false;
+        this.resetPosition();
+      }
     }
     
     return `${progressText}\n${visibleLines.join('\n')}`;
@@ -228,9 +250,8 @@ class TeleprompterManager {
   isAtEnd(): boolean {
     // Consider at end when last line is at bottom of display
     const isEnd = this.currentLinePosition >= this.lines.length - this.numberOfLines;
-    if (isEnd && this.endTimestamp === null) {
-      this.endTimestamp = Date.now();
-      console.log('Reached end of text, starting 3 second countdown');
+    if (isEnd && this.endTimestamp === null && !this.showingFinalLine && !this.showingEndMessage) {
+      console.log('Reached end of text, starting final line display');
     }
     return isEnd;
   }
@@ -447,68 +468,74 @@ class TeleprompterApp extends TpaServer {
       console.log(`[Session ${sessionId}]: Session is no longer active, not starting scrolling`);
       return;
     }
-    
-    // Create interval to scroll the text
-    const scrollInterval = setInterval(() => {
-      try {
-        // Check if the session is still active
-        if (!this.sessionScrollers.has(sessionId)) {
-          clearInterval(scrollInterval);
-          return;
-        }
-        
-        // Advance the position
-        teleprompterManager.advancePosition();
-        
-        // Get current text to display
-        const textToDisplay = teleprompterManager.getCurrentVisibleText();
-        
-        // Show the text
-        this.showTextToUser(session, sessionId, textToDisplay);
-        
-        // Check if we've reached the end
-        if (teleprompterManager.isAtEnd()) {
-          // Stop the scrolling but keep showing text
-          this.stopScrolling(sessionId);
-          console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
+
+    // Create a timeout for the initial delay
+    const delayTimeout = setTimeout(() => {
+      // Create interval to scroll the text
+      const scrollInterval = setInterval(() => {
+        try {
+          // Check if the session is still active
+          if (!this.sessionScrollers.has(sessionId)) {
+            clearInterval(scrollInterval);
+            return;
+          }
           
-          // Create a new interval to keep showing text after scrolling stops
-          const endInterval = setInterval(() => {
-            try {
-              // Check if the session is still active
-              if (!this.sessionScrollers.has(sessionId)) {
-                clearInterval(endInterval);
-                return;
+          // Advance the position
+          teleprompterManager.advancePosition();
+          
+          // Get current text to display
+          const textToDisplay = teleprompterManager.getCurrentVisibleText();
+          
+          // Show the text
+          this.showTextToUser(session, sessionId, textToDisplay);
+          
+          // Check if we've reached the end
+          if (teleprompterManager.isAtEnd()) {
+            // Stop the scrolling but keep showing text
+            this.stopScrolling(sessionId);
+            console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
+            
+            // Create a new interval to keep showing text after scrolling stops
+            const endInterval = setInterval(() => {
+              try {
+                // Check if the session is still active
+                if (!this.sessionScrollers.has(sessionId)) {
+                  clearInterval(endInterval);
+                  return;
+                }
+                
+                const endText = teleprompterManager.getCurrentVisibleText();
+                this.showTextToUser(session, sessionId, endText);
+                
+                // If we're showing the end message, stop this interval
+                if (teleprompterManager.isShowingEndMessage()) {
+                  clearInterval(endInterval);
+                  console.log(`[Session ${sessionId}]: Finished showing end message`);
+                }
+              } catch (error: any) {
+                // If there's an error (likely WebSocket closed), stop the interval
+                if (error.message && error.message.includes('WebSocket not connected')) {
+                  clearInterval(endInterval);
+                  console.log(`[Session ${sessionId}]: WebSocket connection closed, stopping end message updates`);
+                }
               }
-              
-              const endText = teleprompterManager.getCurrentVisibleText();
-              this.showTextToUser(session, sessionId, endText);
-              
-              // If we're showing the end message, stop this interval
-              if (teleprompterManager.isShowingEndMessage()) {
-                clearInterval(endInterval);
-                console.log(`[Session ${sessionId}]: Finished showing end message`);
-              }
-            } catch (error: any) {
-              // If there's an error (likely WebSocket closed), stop the interval
-              if (error.message && error.message.includes('WebSocket not connected')) {
-                clearInterval(endInterval);
-                console.log(`[Session ${sessionId}]: WebSocket connection closed, stopping end message updates`);
-              }
-            }
-          }, 500); // Update every 500ms
+            }, 500); // Update every 500ms
+          }
+        } catch (error: any) {
+          // If there's an error (likely WebSocket closed), stop the interval
+          if (error.message && error.message.includes('WebSocket not connected')) {
+            clearInterval(scrollInterval);
+            console.log(`[Session ${sessionId}]: WebSocket connection closed, stopping scrolling`);
+          }
         }
-      } catch (error: any) {
-        // If there's an error (likely WebSocket closed), stop the interval
-        if (error.message && error.message.includes('WebSocket not connected')) {
-          clearInterval(scrollInterval);
-          console.log(`[Session ${sessionId}]: WebSocket connection closed, stopping scrolling`);
-        }
-      }
-    }, teleprompterManager.getScrollInterval());
-    
-    // Store the interval
-    this.sessionScrollers.set(sessionId, scrollInterval);
+      }, teleprompterManager.getScrollInterval());
+      
+      // Store the interval
+      this.sessionScrollers.set(sessionId, scrollInterval);
+    }, 3000); // 5 second delay
+
+    // Store the timeout so it can be cleared if needed
+    this.sessionScrollers.set(sessionId, delayTimeout);
   }
   
   /**
