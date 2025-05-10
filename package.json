@@ -34,7 +34,7 @@
   "author": "Nicolo Micheletti",
   "license": "ISC",
   "dependencies": {
-    "@augmentos/sdk": "^1.1.1",
+    "@augmentos/sdk": "1.1.7",
     "@langchain/anthropic": "^0.3.13",
     "@langchain/community": "^0.3.31",
     "@langchain/core": "^0.3.40",
