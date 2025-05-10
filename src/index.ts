@@ -11,8 +11,8 @@ import { fetchSettings, getUserLineWidth, getUserNumberOfLines, getUserScrollSpe
 
 // Configuration constants
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
-const PACKAGE_NAME = '';
-const AUGMENTOS_API_KEY = process.env.AUGMENTOS_API_KEY || '';
+const PACKAGE_NAME = process.env.PACKAGE_NAME;
+const AUGMENTOS_API_KEY = process.env.AUGMENTOS_API_KEY;
 
 // TeleprompterManager class to handle teleprompter functionality
 class TeleprompterManager {
