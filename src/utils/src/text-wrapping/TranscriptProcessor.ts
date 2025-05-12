@@ -167,16 +167,14 @@ export class TranscriptProcessor {
     if (typeof maxLineLength !== "number" || isNaN(maxLineLength)) {
       throw new Error(`wrapText: maxLineLength must be a number, got ${typeof maxLineLength}: ${maxLineLength}`);
     }
+
     const result: string[] = [];
     // Split the text by newlines first
     const lines = text.split(/\r?\n/);
-    
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
-      
-      // If this isn't the last line, we'll add a newline marker after processing this line
-      const isLastLine = i === lines.length - 1;
-      
+
       if (line.length > 0) {
         let remainingText = line;
         while (remainingText.length > 0) {
@@ -191,20 +189,18 @@ export class TranscriptProcessor {
             if (splitIndex === 0) {
               splitIndex = maxLineLength;
             }
-            
+
             const chunk = remainingText.substring(0, splitIndex).trim();
             result.push(chunk);
             remainingText = remainingText.substring(splitIndex).trim();
           }
         }
-      }
-      
-      // Add newline marker between lines, but not after the last line
-      if (!isLastLine) {
-        result.push("\n");
+      } else {
+        // Preserve empty lines
+        result.push("");
       }
     }
-    
+
     return result;
   }
 
