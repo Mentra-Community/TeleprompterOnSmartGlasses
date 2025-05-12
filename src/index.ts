@@ -203,7 +203,12 @@ class TeleprompterManager {
     }
     
     // Add progress indicator with stopwatch and current time
-    const progressPercent = Math.min(100, Math.round((this.currentLinePosition / (this.lines.length - this.numberOfLines)) * 100));
+    let progressPercent: number;
+    if (this.lines.length <= this.numberOfLines) {
+      progressPercent = 100;
+    } else {
+      progressPercent = Math.min(100, Math.round((this.currentLinePosition / (this.lines.length - this.numberOfLines)) * 100));
+    }
     const elapsedTime = this.getElapsedTime();
     const currentTime = this.getCurrentTime();
     const progressText = `[${progressPercent}%] | ${elapsedTime}`;
@@ -222,11 +227,12 @@ class TeleprompterManager {
         const timeAtFinalLine = Date.now() - this.finalLineTimestamp;
         if (timeAtFinalLine < 5000) { // Show final line for 5 seconds
           return `${progressText}\n${visibleLines.join('\n')}`;
+        } else {
+          // After 5 seconds, switch to showing END OF TEXT
+          this.showingFinalLine = false;
+          this.showingEndMessage = true;
+          this.endTimestamp = Date.now();
         }
-        // After 5 seconds, switch to showing END OF TEXT
-        this.showingFinalLine = false;
-        this.showingEndMessage = true;
-        this.endTimestamp = Date.now();
       }
       
       // If we're showing the end message, check if it's been 10 seconds
@@ -234,16 +240,17 @@ class TeleprompterManager {
         const timeAtEnd = Date.now() - this.endTimestamp;
         if (timeAtEnd < 10000) { // Show END OF TEXT for 10 seconds
           return `${progressText}\n\n*** END OF TEXT ***`;
+        } else {
+          // After 10 seconds, reset everything
+          this.showingEndMessage = false;
+          this.endTimestamp = null;
+          this.finalLineTimestamp = null;
+          this.showingFinalLine = false;
+          this.resetPosition();
         }
-        // After 10 seconds, reset everything
-        this.showingEndMessage = false;
-        this.endTimestamp = null;
-        this.finalLineTimestamp = null;
-        this.showingFinalLine = false;
-        this.resetPosition();
       }
     }
-    
+
     return `${progressText}\n${visibleLines.join('\n')}`;
   }
 
@@ -368,6 +375,8 @@ class TeleprompterApp extends TpaServer {
     session.settings.onValueChange('custom_text', (newValue, oldValue) => {
       console.log(`Custom text changed for user ${userId}`);
       this.applySettings(session, sessionId, userId);
+      this.stopScrolling(sessionId);
+      this.startScrolling(session, sessionId, userId);
     });
   }
 
@@ -463,6 +472,8 @@ class TeleprompterApp extends TpaServer {
    * Displays text to the user using the SDK's layout API
    */
   private showTextToUser(session: TpaSession, sessionId: string, text: string): void {
+    console.log(`[Session ${sessionId}]: Showing text to user.`);
+
     // Check if the session is still active
     if (!this.sessionScrollers.has(sessionId)) {
       console.log(`[Session ${sessionId}]: Session is no longer active, not sending text`);
@@ -523,6 +534,12 @@ class TeleprompterApp extends TpaServer {
       return;
     }
 
+    // Show the initial lines immediately
+    // Show the initial lines with a 1 second delay
+    setTimeout(() => {
+      this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
+    }, 1000);
+
     // Create a timeout for the initial delay
     const delayTimeout = setTimeout(() => {
       // Create interval to scroll the text
@@ -545,8 +562,6 @@ class TeleprompterApp extends TpaServer {
           
           // Check if we've reached the end
           if (teleprompterManager.isAtEnd()) {
-            // Stop the scrolling but keep showing text
-            this.stopScrolling(sessionId);
             console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
             
             // Create a new interval to keep showing text after scrolling stops
@@ -561,16 +576,20 @@ class TeleprompterApp extends TpaServer {
                 const endText = teleprompterManager.getCurrentVisibleText();
                 this.showTextToUser(session, sessionId, endText);
                 
-                // If we're showing the end message, stop this interval
+                // If we're showing the end message, stop this interval and clean up
                 if (teleprompterManager.isShowingEndMessage()) {
                   clearInterval(endInterval);
-                  console.log(`[Session ${sessionId}]: Finished showing end message`);
+                  this.stopScrolling(sessionId);
+                  this.userTeleprompterManagers.delete(userId);
+                  console.log(`[Session ${sessionId}]: Finished showing end message and cleaned up teleprompter manager for user ${userId}`);
                 }
               } catch (error: any) {
                 // If there's an error (likely WebSocket closed), stop the interval
                 if (error.message && error.message.includes('WebSocket not connected')) {
                   clearInterval(endInterval);
-                  console.log(`[Session ${sessionId}]: WebSocket connection closed, stopping end message updates`);
+                  this.stopScrolling(sessionId);
+                  this.userTeleprompterManagers.delete(userId);
+                  console.log(`[Session ${sessionId}]: WebSocket connection closed, stopping end message updates and cleaned up teleprompter manager for user ${userId}`);
                 }
               }
             }, 500); // Update every 500ms
@@ -586,7 +605,7 @@ class TeleprompterApp extends TpaServer {
       
       // Store the interval
       this.sessionScrollers.set(sessionId, scrollInterval);
-    }, 3000); // 5 second delay
+    }, 5000); // 5 second delay
 
     // Store the timeout so it can be cleared if needed
     this.sessionScrollers.set(sessionId, delayTimeout);
