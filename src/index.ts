@@ -7,6 +7,7 @@ import {
   ViewType,
 } from '@augmentos/sdk';
 import { TranscriptProcessor } from './utils/src/text-wrapping/TranscriptProcessor';
+import { convertLineWidth } from './utils/src/text-wrapping/convertLineWidth';
 
 // Configuration constants
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
@@ -380,10 +381,12 @@ class TeleprompterApp extends TpaServer {
   ): Promise<void> {
     try {
       // Extract settings from the session
-      const lineWidth = session.settings.get<number>('line_width', 38);
+      const lineWidthString = session.settings.get<string>('line_width', "Medium");
       const scrollSpeed = session.settings.get<number>('scroll_speed', 120);
       const numberOfLines = session.settings.get<number>('number_of_lines', 4);
       const customText = session.settings.get<string>('custom_text', '');
+
+      const lineWidth = convertLineWidth(lineWidthString, false);
       
       console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}`);
 

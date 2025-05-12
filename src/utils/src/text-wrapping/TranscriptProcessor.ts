@@ -164,6 +164,9 @@ export class TranscriptProcessor {
 
   // Wrap text into lines based on max line length
   public wrapText(text: string, maxLineLength: number): string[] {
+    if (typeof maxLineLength !== "number" || isNaN(maxLineLength)) {
+      throw new Error(`wrapText: maxLineLength must be a number, got ${typeof maxLineLength}: ${maxLineLength}`);
+    }
     const result: string[] = [];
     // Split the text by newlines first
     const lines = text.split(/\r?\n/);
