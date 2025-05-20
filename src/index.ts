@@ -401,21 +401,28 @@ class TeleprompterApp extends TpaServer {
 
       // Create or update teleprompter manager
       let teleprompterManager = this.userTeleprompterManagers.get(userId);
+      let textChanged = false;
       if (!teleprompterManager) {
         teleprompterManager = new TeleprompterManager(customText, lineWidth, scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
         this.userTeleprompterManagers.set(userId, teleprompterManager);
+        textChanged = true; // Always reset on first creation
       } else {
+        // Check if text changed
+        const prevText = (teleprompterManager as any).text;
+        if (customText && customText !== prevText) {
+          teleprompterManager.setText(customText);
+          textChanged = true;
+        }
         teleprompterManager.setLineWidth(lineWidth);
         teleprompterManager.setScrollSpeed(scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
-        if (customText) {
-          teleprompterManager.setText(customText);
-        }
       }
       
-      // Reset position to start fresh
-      teleprompterManager.resetPosition();
+      // Only reset position if the text changed
+      if (textChanged) {
+        teleprompterManager.resetPosition();
+      }
       
     } catch (error) {
       console.error(`Error applying settings for user ${userId}:`, error);
