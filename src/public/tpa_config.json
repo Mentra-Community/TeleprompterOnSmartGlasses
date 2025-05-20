@@ -67,7 +67,7 @@
             "label": "Scroll speed (words per minute)",
             "defaultValue": 100,
             "min": 60,
-            "max": 200
+            "max": 300
         }
     ]
 }
