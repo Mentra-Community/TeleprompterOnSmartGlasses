@@ -53,11 +53,23 @@ class TeleprompterManager {
     this.resetStopwatch();
   }
   
-  private processText(): void {
+  private processText(preservePosition: boolean = false): void {
+    // Remember current position if preserving
+    const oldPosition = this.currentLinePosition;
+    const oldAccumulator = this.linePositionAccumulator;
+    
     // Split the text into lines
     this.lines = this.transcript.wrapText(this.text, this.lineWidth);
-    this.currentLinePosition = 0;
-    this.linePositionAccumulator = 0;
+    
+    if (!preservePosition) {
+      this.currentLinePosition = 0;
+      this.linePositionAccumulator = 0;
+    } else {
+      // Restore position but cap it if text is now shorter
+      const maxPosition = Math.max(0, this.lines.length - this.numberOfLines);
+      this.currentLinePosition = Math.min(oldPosition, maxPosition);
+      this.linePositionAccumulator = oldAccumulator;
+    }
     
     // Calculate average words per line
     this.avgWordsPerLine = this.transcript.estimateWordsPerLine(this.text);
@@ -108,7 +120,7 @@ class TeleprompterManager {
 
   setText(newText: string): void {
     this.text = newText || this.getDefaultText();
-    this.processText();
+    this.processText(false); // Reset position when text changes
     this.calculateWordsPerInterval();
   }
 
@@ -126,13 +138,14 @@ class TeleprompterManager {
   setLineWidth(width: number): void {
     this.lineWidth = width;
     this.transcript = new TranscriptProcessor(width, this.numberOfLines, this.numberOfLines * 2);
-    this.processText();
+    this.processText(true); // Preserve position when line width changes
     this.calculateWordsPerInterval();
   }
 
   setNumberOfLines(lines: number): void {
     this.numberOfLines = lines;
     this.transcript = new TranscriptProcessor(this.lineWidth, lines, lines * 2);
+    this.processText(true); // Preserve position when number of lines changes
   }
 
   setScrollInterval(intervalMs: number): void {
@@ -285,6 +298,10 @@ class TeleprompterManager {
   isShowingEndMessage(): boolean {
     return this.showingEndMessage;
   }
+
+  getText(): string {
+    return this.text;
+  }
 }
 
 /**
@@ -402,23 +419,26 @@ class TeleprompterApp extends TpaServer {
       // Create or update teleprompter manager
       let teleprompterManager = this.userTeleprompterManagers.get(userId);
       let textChanged = false;
+      // Always ensure newTextToSet is a string
+      const newTextToSet = (customText ?? '') || teleprompterManager?.getDefaultText() || '';
+      console.log(`Applying settings for user ${userId}: customText=${customText}`);
       if (!teleprompterManager) {
-        teleprompterManager = new TeleprompterManager(customText, lineWidth, scrollSpeed);
+        teleprompterManager = new TeleprompterManager(newTextToSet, lineWidth, scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
         this.userTeleprompterManagers.set(userId, teleprompterManager);
         textChanged = true; // Always reset on first creation
       } else {
-        // Check if text changed
-        const prevText = (teleprompterManager as any).text;
-        if (customText && customText !== prevText) {
-          teleprompterManager.setText(customText);
+        // Check if text changed (compare actual text that will be displayed)
+        if (teleprompterManager.getText() !== newTextToSet) {
+          teleprompterManager.setText(newTextToSet);
           textChanged = true;
         }
         teleprompterManager.setLineWidth(lineWidth);
         teleprompterManager.setScrollSpeed(scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
       }
-      
+
+      console.log(`Text changed: ${textChanged}`);
       // Only reset position if the text changed
       if (textChanged) {
         teleprompterManager.resetPosition();
