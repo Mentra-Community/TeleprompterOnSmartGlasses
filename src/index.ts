@@ -283,17 +283,12 @@ class TeleprompterManager {
         if (timeAtEnd < 10000) { // Show END OF TEXT for 10 seconds
           return `${progressText}\n\n*** END OF TEXT ***`;
         } else {
-          // After 10 seconds, either reset or schedule replay
+          // After 10 seconds, just reset the flags
+          // The actual restart will be handled by the scrolling logic
           this.showingEndMessage = false;
           this.endTimestamp = null;
           this.finalLineTimestamp = null;
           this.showingFinalLine = false;
-          
-          if (this.autoReplay) {
-            this.scheduleReplay();
-          } else {
-            this.resetPosition();
-          }
         }
       }
     }
@@ -644,12 +639,28 @@ class TeleprompterApp extends TpaServer {
                 const endText = teleprompterManager.getCurrentVisibleText();
                 this.showTextToUser(session, sessionId, endText);
                 
-                // If we're showing the end message, stop this interval and clean up
+                // If we're showing the end message, check if we should restart
                 if (teleprompterManager.isShowingEndMessage()) {
-                  clearInterval(endInterval);
-                  this.stopScrolling(sessionId);
-                  this.userTeleprompterManagers.delete(userId);
-                  console.log(`[Session ${sessionId}]: Finished showing end message and cleaned up teleprompter manager for user ${userId}`);
+                  const shouldRestart = teleprompterManager.getAutoReplay();
+                  if (shouldRestart) {
+                    // Stop the current intervals
+                    clearInterval(endInterval);
+                    clearInterval(scrollInterval);
+                    this.sessionScrollers.delete(sessionId);
+                    
+                    // Wait 5 seconds then restart
+                    setTimeout(() => {
+                      console.log(`[Session ${sessionId}]: Restarting teleprompter for auto-replay`);
+                      teleprompterManager.resetPosition();
+                      this.startScrolling(session, sessionId, userId);
+                    }, 5000);
+                  } else {
+                    // If not auto-replaying, just stop everything
+                    clearInterval(endInterval);
+                    this.stopScrolling(sessionId);
+                    this.userTeleprompterManagers.delete(userId);
+                    console.log(`[Session ${sessionId}]: Finished showing end message and cleaned up teleprompter manager for user ${userId}`);
+                  }
                 }
               } catch (error: any) {
                 // If there's an error (likely WebSocket closed), stop the interval
