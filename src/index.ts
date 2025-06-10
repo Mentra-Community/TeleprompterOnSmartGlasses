@@ -32,13 +32,16 @@ class TeleprompterManager {
   private showingEndMessage: boolean = false; // Track if we're showing the END OF TEXT message
   private showingFinalLine: boolean = false; // Track if we're showing the final line
   private finalLineTimestamp: number | null = null; // Track when we started showing the final line
+  private autoReplay: boolean = false; // Track if auto-replay is enabled
+  private replayTimeout: NodeJS.Timeout | null = null; // Track the replay timeout
   
-  constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120) {
+  constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120, autoReplay: boolean = false) {
     this.text = text || this.getDefaultText();
     this.lineWidth = lineWidth;
     this.numberOfLines = 4;
     this.scrollSpeed = scrollSpeed;
     this.scrollInterval = 500; // Update twice per second for smoother scrolling
+    this.autoReplay = autoReplay;
     
     // Initialize transcript processor for text formatting
     this.transcript = new TranscriptProcessor(lineWidth, this.numberOfLines, this.numberOfLines * 2);
@@ -161,6 +164,28 @@ class TeleprompterManager {
     return this.scrollInterval;
   }
 
+  setAutoReplay(enabled: boolean): void {
+    this.autoReplay = enabled;
+    // If auto-replay is disabled, clear any pending replay timeout
+    if (!enabled && this.replayTimeout) {
+      clearTimeout(this.replayTimeout);
+      this.replayTimeout = null;
+    }
+  }
+
+  getAutoReplay(): boolean {
+    return this.autoReplay;
+  }
+
+  private scheduleReplay(): void {
+    if (this.autoReplay && !this.replayTimeout) {
+      this.replayTimeout = setTimeout(() => {
+        this.resetPosition();
+        this.replayTimeout = null;
+      }, 5000); // 5 second delay before replay
+    }
+  }
+
   resetPosition(): void {
     this.currentLinePosition = 0;
     this.linePositionAccumulator = 0;
@@ -168,6 +193,10 @@ class TeleprompterManager {
     this.showingEndMessage = false;
     this.showingFinalLine = false;
     this.finalLineTimestamp = null;
+    if (this.replayTimeout) {
+      clearTimeout(this.replayTimeout);
+      this.replayTimeout = null;
+    }
     this.resetStopwatch(); // Reset the stopwatch when position is reset
   }
 
@@ -254,12 +283,17 @@ class TeleprompterManager {
         if (timeAtEnd < 10000) { // Show END OF TEXT for 10 seconds
           return `${progressText}\n\n*** END OF TEXT ***`;
         } else {
-          // After 10 seconds, reset everything
+          // After 10 seconds, either reset or schedule replay
           this.showingEndMessage = false;
           this.endTimestamp = null;
           this.finalLineTimestamp = null;
           this.showingFinalLine = false;
-          this.resetPosition();
+          
+          if (this.autoReplay) {
+            this.scheduleReplay();
+          } else {
+            this.resetPosition();
+          }
         }
       }
     }
@@ -395,6 +429,11 @@ class TeleprompterApp extends TpaServer {
       this.stopScrolling(sessionId);
       this.startScrolling(session, sessionId, userId);
     });
+
+    session.settings.onValueChange('auto_replay', (newValue, oldValue) => {
+      console.log(`Auto replay changed for user ${userId}: ${oldValue} -> ${newValue}`);
+      this.applySettings(session, sessionId, userId);
+    });
   }
 
   /**
@@ -411,10 +450,11 @@ class TeleprompterApp extends TpaServer {
       const scrollSpeed = session.settings.get<number>('scroll_speed', 120);
       const numberOfLines = session.settings.get<number>('number_of_lines', 4);
       const customText = session.settings.get<string>('custom_text', '');
+      const autoReplay = session.settings.get<boolean>('auto_replay', false);
 
       const lineWidth = convertLineWidth(lineWidthString, false);
       
-      console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}`);
+      console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}, autoReplay=${autoReplay}`);
 
       // Create or update teleprompter manager
       let teleprompterManager = this.userTeleprompterManagers.get(userId);
@@ -423,7 +463,7 @@ class TeleprompterApp extends TpaServer {
       const newTextToSet = (customText ?? '') || teleprompterManager?.getDefaultText() || '';
       console.log(`Applying settings for user ${userId}: customText=${customText}`);
       if (!teleprompterManager) {
-        teleprompterManager = new TeleprompterManager(newTextToSet, lineWidth, scrollSpeed);
+        teleprompterManager = new TeleprompterManager(newTextToSet, lineWidth, scrollSpeed, autoReplay);
         teleprompterManager.setNumberOfLines(numberOfLines);
         this.userTeleprompterManagers.set(userId, teleprompterManager);
         textChanged = true; // Always reset on first creation
@@ -436,6 +476,7 @@ class TeleprompterApp extends TpaServer {
         teleprompterManager.setLineWidth(lineWidth);
         teleprompterManager.setScrollSpeed(scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
+        teleprompterManager.setAutoReplay(autoReplay);
       }
 
       console.log(`Text changed: ${textChanged}`);
