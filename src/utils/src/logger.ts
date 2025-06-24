@@ -1,5 +1,5 @@
 import winston from 'winston';
-import { UserSession } from '@augmentos/sdk';
+import { UserSession } from '@mentra/sdk';
 
 // Define the error structure
 interface FormattedError {
@@ -16,10 +16,10 @@ function safeStringify(obj: any): any {
       result[key] = safeStringify(value);
     });
     return result;
-  } 
+  }
   if (obj instanceof Set) {
     return Array.from(obj).map(safeStringify);
-  } 
+  }
   return obj;
 }
 
@@ -30,21 +30,21 @@ export function createLogger(defaultMeta = {}) {
     // Check for splat (additional arguments)
     const splatSymbol = Symbol.for('splat');
     const splat = info[splatSymbol];
-    
+
     if (splat && Array.isArray(splat) && splat.length > 0) {
       // Get the first argument
       const arg = splat[0];
-      
+
       // Handle Maps and Sets specially
       if (arg instanceof Map || arg instanceof Set) {
         // Convert to plain object/array
         info.data = safeStringify(arg);
-        
+
         // Remove from splat to prevent double logging
         delete info[splatSymbol];
       }
     }
-    
+
     return info;
   });
 
@@ -53,11 +53,11 @@ const objectFormat = winston.format((info: any) => {
   // Check for splat (additional arguments)
   const splatSymbol = Symbol.for('splat');
   const splat = info[splatSymbol];
-  
+
   if (splat && Array.isArray(splat) && splat.length > 0) {
     // Get the first argument
     const arg = splat[0];
-    
+
     // Handle any type of object
     if (arg !== null && typeof arg === 'object') {
       // Convert Maps and Sets
@@ -67,12 +67,12 @@ const objectFormat = winston.format((info: any) => {
         // For regular objects and arrays
         info.data = arg;
       }
-      
+
       // Remove from splat to prevent double logging
       delete info[splatSymbol];
     }
   }
-  
+
   return info;
 });
 
@@ -100,7 +100,7 @@ const objectFormat = winston.format((info: any) => {
 
             // Format user ID
             const userInfo = userId ? `${userId}` : '';
-            
+
             // Format data (converted Map/Set)
             const dataStr = data ? `\n${JSON.stringify(data)}` : '';
 
@@ -113,17 +113,17 @@ const objectFormat = winston.format((info: any) => {
                 delete rest[key];
               }
             });
-            
+
             // Format rest of metadata
-            const metaStr = Object.keys(rest).length > 0 
-              ? `\n${JSON.stringify(rest, null, 2)}` 
+            const metaStr = Object.keys(rest).length > 0
+              ? `\n${JSON.stringify(rest, null, 2)}`
               : '';
-            
+
             // Format error if present
-            const errorStr = error 
-              ? `\n${(error as FormattedError).stack}` 
+            const errorStr = error
+              ? `\n${(error as FormattedError).stack}`
               : '';
-            
+
               // console.log("REST", rest);
               // console.log("SPLAT", splat);
             // return `[${level}, ${timestamp}, ${userInfo}]:\n${message}${metaStr}${errorStr}\n`;

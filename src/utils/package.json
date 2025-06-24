@@ -14,7 +14,7 @@
     "link-pkg": "bun link"
   },
   "dependencies": {
-    "@augmentos/sdk": "workspace:*",
+    "@mentra/sdk": "workspace:*",
     "@augmentos/config": "workspace:*"
   },
   "devDependencies": {

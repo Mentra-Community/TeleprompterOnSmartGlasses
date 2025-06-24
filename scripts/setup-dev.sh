@@ -9,7 +9,7 @@ NC='\033[0m' # No Color
 echo -e "${YELLOW}Setting up Teleprompter development environment...${NC}"
 
 # Check if local SDK is available
-if [ -d "/app/node_modules/@augmentos/sdk" ] && [ -f "/app/node_modules/@augmentos/sdk/package.json" ]; then
+if [ -d "/app/node_modules/@mentra/sdk" ] && [ -f "/app/node_modules/@mentra/sdk/package.json" ]; then
   echo -e "${YELLOW}Local SDK found. Using local version...${NC}"
   # Local SDK will be mounted via volume
 else

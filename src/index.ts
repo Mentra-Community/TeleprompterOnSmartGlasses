@@ -5,14 +5,14 @@ import {
   TpaServer,
   TpaSession,
   ViewType,
-} from '@augmentos/sdk';
+} from '@mentra/sdk';
 import { TranscriptProcessor } from './utils/src/text-wrapping/TranscriptProcessor';
 import { convertLineWidth } from './utils/src/text-wrapping/convertLineWidth';
 
 // Configuration constants
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
 const PACKAGE_NAME = process.env.PACKAGE_NAME;
-const AUGMENTOS_API_KEY = process.env.AUGMENTOS_API_KEY;
+const MENTRAOS_API_KEY = process.env.MENTRAOS_API_KEY || process.env.AUGMENTOS_API_KEY;
 
 // TeleprompterManager class to handle teleprompter functionality
 class TeleprompterManager {
@@ -34,7 +34,7 @@ class TeleprompterManager {
   private finalLineTimestamp: number | null = null; // Track when we started showing the final line
   private autoReplay: boolean = false; // Track if auto-replay is enabled
   private replayTimeout: NodeJS.Timeout | null = null; // Track the replay timeout
-  
+
   constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120, autoReplay: boolean = false) {
     this.text = text || this.getDefaultText();
     this.lineWidth = lineWidth;
@@ -42,28 +42,28 @@ class TeleprompterManager {
     this.scrollSpeed = scrollSpeed;
     this.scrollInterval = 500; // Update twice per second for smoother scrolling
     this.autoReplay = autoReplay;
-    
+
     // Initialize transcript processor for text formatting
     this.transcript = new TranscriptProcessor(lineWidth, this.numberOfLines, this.numberOfLines * 2);
-    
+
     // Process the text into lines
     this.processText();
-    
+
     // Calculate words per interval based on WPM
     this.calculateWordsPerInterval();
-    
+
     // Initialize start time
     this.resetStopwatch();
   }
-  
+
   private processText(preservePosition: boolean = false): void {
     // Remember current position if preserving
     const oldPosition = this.currentLinePosition;
     const oldAccumulator = this.linePositionAccumulator;
-    
+
     // Split the text into lines
     this.lines = this.transcript.wrapText(this.text, this.lineWidth);
-    
+
     if (!preservePosition) {
       this.currentLinePosition = 0;
       this.linePositionAccumulator = 0;
@@ -73,32 +73,32 @@ class TeleprompterManager {
       this.currentLinePosition = Math.min(oldPosition, maxPosition);
       this.linePositionAccumulator = oldAccumulator;
     }
-    
+
     // Calculate average words per line
     this.avgWordsPerLine = this.transcript.estimateWordsPerLine(this.text);
     if (this.avgWordsPerLine <= 0) this.avgWordsPerLine = 5; // Fallback to prevent division by zero
-    
+
     console.log(`Average words per line: ${this.avgWordsPerLine}`);
   }
-  
+
   private calculateWordsPerInterval(): void {
     // Calculate words per interval based on WPM and interval
     // WPM / (60 seconds per minute / interval in seconds)
     this.wordsPerInterval = (this.scrollSpeed / 60) * (this.scrollInterval / 1000);
-    
+
     // Convert words per interval to lines per interval
     const linesPerInterval = this.wordsPerInterval / Math.max(1, this.avgWordsPerLine);
-    
+
     console.log(`Scroll speed: ${this.scrollSpeed} WPM`);
     console.log(`Words per interval (${this.scrollInterval}ms): ${this.wordsPerInterval.toFixed(4)}`);
     console.log(`Estimated lines per interval: ${linesPerInterval.toFixed(4)}`);
   }
-  
+
   // Reset the stopwatch
   private resetStopwatch(): void {
     this.startTime = Date.now();
   }
-  
+
   // Get elapsed time as formatted string (MM:SS)
   private getElapsedTime(): string {
     const elapsedMs = Date.now() - this.startTime;
@@ -107,7 +107,7 @@ class TeleprompterManager {
     const seconds = totalSeconds % 60;
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   }
-  
+
   // Get current time formatted as HH:MM:SS
   private getCurrentTime(): string {
     const now = new Date();
@@ -116,7 +116,7 @@ class TeleprompterManager {
     const seconds = now.getSeconds().toString().padStart(2, '0');
     return `${hours}:${minutes}:${seconds}`;
   }
-  
+
   getDefaultText(): string {
     return `Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content through the settings. The teleprompter will automatically scroll text at a comfortable reading pace. You can adjust the scroll speed (in words per minute), line width, and number of lines through the settings menu. As you read this text, it will continue to scroll upward, allowing you to deliver your presentation smoothly and professionally. You can also use the teleprompter to read your own text. Just enter your text in the settings and the teleprompter will display it for you to read. When you reach the end of the text, the teleprompter will show "END OF TEXT" and then restart from the beginning after a short pause.`;
   }
@@ -131,10 +131,10 @@ class TeleprompterManager {
     // Ensure scroll speed is within reasonable bounds
     if (wordsPerMinute < 1) wordsPerMinute = 1;
     if (wordsPerMinute > 500) wordsPerMinute = 500;
-    
+
     this.scrollSpeed = wordsPerMinute;
     this.calculateWordsPerInterval();
-    
+
     console.log(`Scroll speed set to ${this.scrollSpeed} WPM`);
   }
 
@@ -155,7 +155,7 @@ class TeleprompterManager {
     // Ensure interval is within reasonable bounds
     if (intervalMs < 100) intervalMs = 100; // Minimum 100ms for performance
     if (intervalMs > 2000) intervalMs = 2000; // Maximum 2 seconds for responsiveness
-    
+
     this.scrollInterval = intervalMs;
     this.calculateWordsPerInterval();
   }
@@ -203,25 +203,25 @@ class TeleprompterManager {
   // Advance position based on words per minute
   advancePosition(): void {
     if (this.lines.length === 0) return;
-    
+
     // Calculate how many lines to advance based on WPM
     // Convert words per interval to lines per interval
     const linesPerInterval = this.wordsPerInterval / Math.max(1, this.avgWordsPerLine);
-    
+
     // Add to the accumulator
     this.linePositionAccumulator += linesPerInterval;
-    
+
     // If we've accumulated enough for at least one line, advance
     if (this.linePositionAccumulator >= 1) {
       // Get integer number of lines to advance
       const linesToAdvance = Math.floor(this.linePositionAccumulator);
       // Keep the fractional part for next time
       this.linePositionAccumulator -= linesToAdvance;
-      
+
       // Advance by calculated lines
       this.currentLinePosition += linesToAdvance;
     }
-    
+
     // Cap at the end of text (when last line is at bottom of display)
     const maxPosition = this.lines.length - this.numberOfLines;
     if (this.currentLinePosition >= maxPosition) {
@@ -232,18 +232,18 @@ class TeleprompterManager {
   // Get current visible text
   getCurrentVisibleText(): string {
     if (this.lines.length === 0) return "No text available";
-    
+
     // Get visible lines
     const visibleLines = this.lines.slice(
-      this.currentLinePosition, 
+      this.currentLinePosition,
       this.currentLinePosition + this.numberOfLines
     );
-    
+
     // Add padding if needed
     while (visibleLines.length < this.numberOfLines) {
       visibleLines.push("");
     }
-    
+
     // Add progress indicator with stopwatch and current time
     let progressPercent: number;
     if (this.lines.length <= this.numberOfLines) {
@@ -254,7 +254,7 @@ class TeleprompterManager {
     const elapsedTime = this.getElapsedTime();
     const currentTime = this.getCurrentTime();
     const progressText = `[${progressPercent}%] | ${elapsedTime}`;
-    
+
     // Check if we're at the end
     if (this.isAtEnd()) {
       // If we haven't started showing the final line yet, start now
@@ -263,7 +263,7 @@ class TeleprompterManager {
         this.finalLineTimestamp = Date.now();
         return `${progressText}\n${visibleLines.join('\n')}`;
       }
-      
+
       // If we're showing the final line, check if it's been 5 seconds
       if (this.showingFinalLine && this.finalLineTimestamp) {
         const timeAtFinalLine = Date.now() - this.finalLineTimestamp;
@@ -276,7 +276,7 @@ class TeleprompterManager {
           this.endTimestamp = Date.now();
         }
       }
-      
+
       // If we're showing the end message, check if it's been 10 seconds
       if (this.showingEndMessage && this.endTimestamp) {
         const timeAtEnd = Date.now() - this.endTimestamp;
@@ -309,7 +309,7 @@ class TeleprompterManager {
   getTotalLines(): number {
     return this.lines.length;
   }
-  
+
   // Get current line position for debugging
   getCurrentLinePosition(): number {
     return this.currentLinePosition;
@@ -318,7 +318,7 @@ class TeleprompterManager {
   clear(): void {
     this.transcript.clear();
   }
-  
+
   // Get scroll speed in WPM
   getScrollSpeed(): number {
     return this.scrollSpeed;
@@ -343,13 +343,13 @@ class TeleprompterApp extends TpaServer {
   private sessionScrollers = new Map<string, NodeJS.Timeout>();
 
   constructor() {
-    if (!AUGMENTOS_API_KEY) {
+    if (!MENTRAOS_API_KEY) {
       throw new Error('AUGMENTOS_API_KEY is not set');
     }
-  
+
     super({
       packageName: PACKAGE_NAME!,
-      apiKey: AUGMENTOS_API_KEY as string,
+      apiKey: MENTRAOS_API_KEY as string,
       port: PORT,
       publicDir: path.join(__dirname, './public')
     });
@@ -364,28 +364,28 @@ class TeleprompterApp extends TpaServer {
     try {
       // Set up settings change handlers
       this.setupSettingsHandlers(session, sessionId, userId);
-      
+
       // Apply initial settings
       await this.applySettings(session, sessionId, userId);
-      
+
       // Show initial text
       const teleprompterManager = this.userTeleprompterManagers.get(userId);
       if (teleprompterManager) {
         this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
       }
-      
+
       // Start scrolling
       this.startScrolling(session, sessionId, userId);
-      
+
     } catch (error) {
       console.error('Error initializing session:', error);
       // Create default teleprompter manager if there was an error
       const teleprompterManager = new TeleprompterManager('', 38, 120);
       this.userTeleprompterManagers.set(userId, teleprompterManager);
-      
+
       // Show initial text
       this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
-      
+
       // Start scrolling
       this.startScrolling(session, sessionId, userId);
     }
@@ -448,7 +448,7 @@ class TeleprompterApp extends TpaServer {
       const autoReplay = session.settings.get<boolean>('auto_replay', false);
 
       const lineWidth = convertLineWidth(lineWidthString, false);
-      
+
       console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}, autoReplay=${autoReplay}`);
 
       // Create or update teleprompter manager
@@ -479,7 +479,7 @@ class TeleprompterApp extends TpaServer {
       if (textChanged) {
         teleprompterManager.resetPosition();
       }
-      
+
     } catch (error) {
       console.error(`Error applying settings for user ${userId}:`, error);
       throw error;
@@ -491,23 +491,23 @@ class TeleprompterApp extends TpaServer {
    */
   protected async onStop(sessionId: string, userId: string, reason: string): Promise<void> {
     console.log(`Session ${sessionId} stopped: ${reason}`);
-    
+
     // Stop scrolling for this session
     this.stopScrolling(sessionId);
-    
+
     // Immediately remove the session from our maps to prevent further updates
     this.sessionScrollers.delete(sessionId);
-    
+
     // Clean up teleprompter manager if this was the last session for this user
     let hasOtherSessions = false;
-    
+
     try {
         const activeSessions = (this as any).getSessions?.() || [];
-        
+
         for (const [activeSessionId, session] of Object.entries(activeSessions)) {
             if (activeSessionId !== sessionId) {
                 const sessionObj = session as any;
-                if (sessionObj.userId === userId || 
+                if (sessionObj.userId === userId ||
                     sessionObj.user === userId ||
                     sessionObj.getUserId?.() === userId) {
                     hasOtherSessions = true;
@@ -515,7 +515,7 @@ class TeleprompterApp extends TpaServer {
                 }
             }
         }
-        
+
         // If no other sessions, clean up the teleprompter manager
         if (!hasOtherSessions) {
             const teleprompterManager = this.userTeleprompterManagers.get(userId);
@@ -530,7 +530,7 @@ class TeleprompterApp extends TpaServer {
         console.error('Error cleaning up session:', e);
     }
   }
-  
+
   /**
    * Displays text to the user using the SDK's layout API
    */
@@ -542,7 +542,7 @@ class TeleprompterApp extends TpaServer {
       console.log(`[Session ${sessionId}]: Session is no longer active, not sending text`);
       return;
     }
-    
+
     // Check WebSocket state before sending
     try {
       const ws = (session as any).ws;
@@ -551,7 +551,7 @@ class TeleprompterApp extends TpaServer {
         this.stopScrolling(sessionId);
         return;
       }
-      
+
       console.log(`[Session ${sessionId}]: Text to show: \n${text}`);
 
       // Use the SDK's layout API to display the text
@@ -570,7 +570,7 @@ class TeleprompterApp extends TpaServer {
       }
     }
   }
-  
+
   /**
    * Starts scrolling the teleprompter text for a session
    */
@@ -579,14 +579,14 @@ class TeleprompterApp extends TpaServer {
     if (this.sessionScrollers.has(sessionId)) {
       this.stopScrolling(sessionId);
     }
-    
+
     // Get teleprompter manager for this user
     const teleprompterManager = this.userTeleprompterManagers.get(userId);
     if (!teleprompterManager) {
       console.error(`No teleprompter manager found for user ${userId}, session ${sessionId}`);
       return;
     }
-    
+
     // Check if the session is still active before creating intervals
     try {
       // Try to access a property of the session to check if it's still valid
@@ -613,20 +613,20 @@ class TeleprompterApp extends TpaServer {
             clearInterval(scrollInterval);
             return;
           }
-          
+
           // Advance the position
           teleprompterManager.advancePosition();
-          
+
           // Get current text to display
           const textToDisplay = teleprompterManager.getCurrentVisibleText();
-          
+
           // Show the text
           this.showTextToUser(session, sessionId, textToDisplay);
-          
+
           // Check if we've reached the end
           if (teleprompterManager.isAtEnd()) {
             console.log(`[Session ${sessionId}]: Reached end of teleprompter text`);
-            
+
             // Create a new interval to keep showing text after scrolling stops
             const endInterval = setInterval(() => {
               try {
@@ -635,10 +635,10 @@ class TeleprompterApp extends TpaServer {
                   clearInterval(endInterval);
                   return;
                 }
-                
+
                 const endText = teleprompterManager.getCurrentVisibleText();
                 this.showTextToUser(session, sessionId, endText);
-                
+
                 // If we're showing the end message, check if we should restart
                 if (teleprompterManager.isShowingEndMessage()) {
                   const shouldRestart = teleprompterManager.getAutoReplay();
@@ -647,7 +647,7 @@ class TeleprompterApp extends TpaServer {
                     clearInterval(endInterval);
                     clearInterval(scrollInterval);
                     this.sessionScrollers.delete(sessionId);
-                    
+
                     // Wait 5 seconds then restart
                     setTimeout(() => {
                       console.log(`[Session ${sessionId}]: Restarting teleprompter for auto-replay`);
@@ -681,7 +681,7 @@ class TeleprompterApp extends TpaServer {
           }
         }
       }, teleprompterManager.getScrollInterval());
-      
+
       // Store the interval
       this.sessionScrollers.set(sessionId, scrollInterval);
     }, 5000); // 5 second delay
@@ -689,7 +689,7 @@ class TeleprompterApp extends TpaServer {
     // Store the timeout so it can be cleared if needed
     this.sessionScrollers.set(sessionId, delayTimeout);
   }
-  
+
   /**
    * Stops scrolling for a session
    */

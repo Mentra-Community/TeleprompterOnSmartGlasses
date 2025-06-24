@@ -18,5 +18,5 @@
 - **Comments**: Use JSDoc for functions and classes
 
 ## Dependencies
-- Main: @augmentos/sdk, express, ws
+- Main: @mentra/sdk, express, ws
 - Dev: TypeScript, ESLint with TypeScript plugin, Prettier
