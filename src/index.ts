@@ -34,14 +34,25 @@ class TeleprompterManager {
   private finalLineTimestamp: number | null = null; // Track when we started showing the final line
   private autoReplay: boolean = false; // Track if auto-replay is enabled
   private replayTimeout: NodeJS.Timeout | null = null; // Track the replay timeout
+  private showEstimatedTotal: boolean = true; // Track if estimated total should be shown in status bar
 
-  constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120, autoReplay: boolean = false) {
+  // Speech-based scrolling properties
+  private speechBuffer: string[] = []; // Buffer of recent speech words
+  private speechScrollEnabled: boolean = true; // Enable/disable speech-based scrolling
+  private lastSpeechPosition: number = -1; // Last detected position from speech
+  private speechLookaheadLines: number = 4; // How many lines ahead to search for speech matches (increased)
+  private minWordsForMatch: number = 3; // Minimum words needed for a reliable match (reduced to 1)
+  private lineOffset: number = 0; // Offset the line position by 1 to show the match on the 2nd line
+
+  constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120, autoReplay: boolean = false, speechScrollEnabled: boolean = true, showEstimatedTotal: boolean = true) {
     this.text = text || this.getDefaultText();
     this.lineWidth = lineWidth;
     this.numberOfLines = 4;
     this.scrollSpeed = scrollSpeed;
     this.scrollInterval = 500; // Update twice per second for smoother scrolling
     this.autoReplay = autoReplay;
+    this.speechScrollEnabled = speechScrollEnabled;
+    this.showEstimatedTotal = showEstimatedTotal;
 
     // Initialize transcript processor for text formatting
     this.transcript = new TranscriptProcessor(lineWidth, this.numberOfLines, this.numberOfLines * 2);
@@ -105,6 +116,28 @@ class TeleprompterManager {
     const totalSeconds = Math.floor(elapsedMs / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  /**
+   * Calculate and format the projected total time based on current progress
+   * @param progressPercent Current progress as a percentage (0-100)
+   * @returns Formatted time string (MM:SS) or "--:--" if projection not available
+   */
+  private getProjectedTotalTime(progressPercent: number): string {
+    // Don't calculate projection if progress is too low (less than 5%) or at 100%
+    if (progressPercent < 5 || progressPercent >= 100) {
+      return "--:--";
+    }
+
+    const elapsedMs = Date.now() - this.startTime;
+    const elapsedSeconds = elapsedMs / 1000;
+
+    // Calculate projected total time: elapsed_time / (progress_percent / 100)
+    const projectedTotalSeconds = Math.round(elapsedSeconds / (progressPercent / 100));
+
+    const minutes = Math.floor(projectedTotalSeconds / 60);
+    const seconds = projectedTotalSeconds % 60;
     return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   }
 
@@ -177,6 +210,20 @@ class TeleprompterManager {
     return this.autoReplay;
   }
 
+  /**
+   * Set whether to show estimated total time in status bar
+   */
+  setShowEstimatedTotal(enabled: boolean): void {
+    this.showEstimatedTotal = enabled;
+  }
+
+  /**
+   * Get whether estimated total time is shown in status bar
+   */
+  getShowEstimatedTotal(): boolean {
+    return this.showEstimatedTotal;
+  }
+
   private scheduleReplay(): void {
     if (this.autoReplay && !this.replayTimeout) {
       this.replayTimeout = setTimeout(() => {
@@ -197,6 +244,7 @@ class TeleprompterManager {
       clearTimeout(this.replayTimeout);
       this.replayTimeout = null;
     }
+    this.clearSpeechBuffer(); // Clear speech buffer when position is reset
     this.resetStopwatch(); // Reset the stopwatch when position is reset
   }
 
@@ -220,6 +268,9 @@ class TeleprompterManager {
 
       // Advance by calculated lines
       this.currentLinePosition += linesToAdvance;
+
+      // Skip over empty lines after advancing
+      this.currentLinePosition = this.skipEmptyLines(this.currentLinePosition);
     }
 
     // Cap at the end of text (when last line is at bottom of display)
@@ -252,8 +303,11 @@ class TeleprompterManager {
       progressPercent = Math.min(100, Math.round((this.currentLinePosition / (this.lines.length - this.numberOfLines)) * 100));
     }
     const elapsedTime = this.getElapsedTime();
+    const projectedTotalTime = this.getProjectedTotalTime(progressPercent);
     const currentTime = this.getCurrentTime();
-    const progressText = `[${progressPercent}%] | ${elapsedTime}`;
+    const progressText = this.showEstimatedTotal
+      ? `[${progressPercent}%] | ${elapsedTime} | Est Total: ${projectedTotalTime}`
+      : `[${progressPercent}%] | ${elapsedTime}`;
 
     // Check if we're at the end
     if (this.isAtEnd()) {
@@ -330,6 +384,338 @@ class TeleprompterManager {
 
   getText(): string {
     return this.text;
+  }
+
+    /**
+   * Process incoming speech transcription and update position accordingly
+   * @param speechText - The latest speech text from transcription
+   * @param isFinal - Whether this is a final transcription result
+   */
+  processSpeechInput(speechText: string, isFinal: boolean = false): void {
+    if (!this.speechScrollEnabled || !speechText.trim()) {
+      return;
+    }
+
+    // Clean and split the speech text into words - use same normalization as search text
+    const words = speechText.toLowerCase()
+      .replace(/[^\w\s'-]/g, ' ') // Keep apostrophes and hyphens, like search text
+      .split(/\s+/)
+      .filter(word => word.length > 0);
+
+    if (words.length === 0) {
+      return;
+    }
+
+    // Update speech buffer - keep last 20 words for context (increased)
+    if (isFinal) {
+      // For final results, replace the buffer content more aggressively
+      this.speechBuffer = [...this.speechBuffer, ...words].slice(-20);
+    } else {
+      // For interim results, be more aggressive - update more frequently
+      const bufferWithoutInterim = this.speechBuffer; // Remove last 3 words that might be interim (reduced)
+      this.speechBuffer = [...bufferWithoutInterim, ...words].slice(-10);
+    }
+
+    console.log(`[SPEECH DEBUG] Buffer (${this.speechBuffer.length} words): "${this.speechBuffer.join(' ')}" | Current line: ${this.currentLinePosition}`);
+
+    // Only try to match if we have enough words
+    if (this.speechBuffer.length < this.minWordsForMatch) {
+      return;
+    }
+
+    // Find the best match position in the text
+    const matchPosition = this.findSpeechMatchPosition();
+
+    if (matchPosition !== -1) {
+      console.log(`[SPEECH MATCH] Found at line ${matchPosition}, current position: ${this.currentLinePosition}`);
+
+      // Only advance forward - never go backward
+      if (matchPosition > this.currentLinePosition) {
+        // Calculate how far to advance - be more aggressive but only forward
+        const maxAdvance = Math.min(matchPosition, this.currentLinePosition + 10); // Increased from 5 to 10
+
+        // Add slight forward bias to help keep up with speech
+        const biasedPosition = Math.max(maxAdvance, this.currentLinePosition);
+
+        // Position the teleprompter so the matched text appears on the 2nd line (not 1st)
+        // This provides better spatial reference for tracking location
+        const targetPosition = Math.max(this.currentLinePosition, biasedPosition - this.lineOffset); // Never go below current position
+
+        // Skip over empty lines when advancing
+        const finalPosition = this.skipEmptyLines(targetPosition);
+
+        const previousPosition = this.currentLinePosition;
+        // Ensure we only move forward, never backward
+        this.currentLinePosition = Math.max(this.currentLinePosition, Math.min(finalPosition, this.lines.length - this.numberOfLines));
+
+        if (this.currentLinePosition !== previousPosition) {
+          this.linePositionAccumulator = 0; // Reset accumulator since we're jumping
+        }
+        this.lastSpeechPosition = matchPosition;
+
+        console.log(`[SPEECH ADVANCE] Moved forward to line ${this.currentLinePosition} (was ${previousPosition}) to show speech match at line ${matchPosition} on 2nd display line`);
+      } else {
+        console.log(`[SPEECH NO_ADVANCE] Match at line ${matchPosition} is not ahead of current position ${this.currentLinePosition}, staying put`);
+      }
+    } else {
+      console.log(`[SPEECH NO_MATCH] No match found for buffer: "${this.speechBuffer.slice(-5).join(' ')}" | Searching from line ${this.currentLinePosition}`);
+    }
+  }
+
+    /**
+   * Find the best match position for current speech buffer in the teleprompter text
+   * @returns Line number where speech was found, or -1 if no good match
+   */
+  private findSpeechMatchPosition(): number {
+    if (this.speechBuffer.length < this.minWordsForMatch || this.lines.length === 0) {
+      return -1;
+    }
+
+        // Search window - only look forward, never backward
+    const searchStartLine = this.currentLinePosition; // Start from current position, never behind
+    const searchEndLine = Math.min(
+      this.lines.length,
+      this.currentLinePosition + this.numberOfLines + 1 // Much larger lookahead
+    );
+
+    console.log(`[SEARCH DEBUG] Searching lines ${searchStartLine} to ${searchEndLine} (current: ${this.currentLinePosition})`);
+
+    const searchLines = this.lines.slice(searchStartLine, searchEndLine);
+    // Filter out empty lines from search text
+    const nonEmptyLines = searchLines.filter(line => line && line.trim().length > 0);
+
+    // Better text normalization
+    const searchText = nonEmptyLines.join(' ').toLowerCase()
+      .replace(/[^\w\s'-]/g, ' ') // Keep apostrophes and hyphens
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim();
+
+    if (!searchText) {
+      console.log(`[SEARCH DEBUG] No search text found in range`);
+      return -1;
+    }
+
+    const searchWords = searchText.split(' ').filter(w => w.length > 0);
+    console.log(`[SEARCH DEBUG] Search text (${searchWords.length} words): "${searchText.substring(0, 100)}..."`);
+
+    // Try different speech buffer lengths (from shorter to longer for better responsiveness)
+    for (let bufferLen = Math.min(this.speechBuffer.length, 5); bufferLen >= this.minWordsForMatch; bufferLen--) {
+      const speechPhrase = this.speechBuffer.slice(-bufferLen).join(' ');
+      console.log(`[MATCH DEBUG] Trying phrase (${bufferLen} words): "${speechPhrase}"`);
+
+      // Try exact match first
+      const exactMatch = this.findExactMatch(speechPhrase, searchWords, searchStartLine);
+      if (exactMatch !== -1) {
+        console.log(`[MATCH SUCCESS] Exact match found: "${speechPhrase}" at line ${exactMatch}`);
+        return exactMatch;
+      }
+
+      // Try fuzzy match next
+      const fuzzyMatch = this.findFuzzyMatch(speechPhrase, searchWords, searchStartLine);
+      if (fuzzyMatch !== -1) {
+        console.log(`[MATCH SUCCESS] Fuzzy match found: "${speechPhrase}" at line ${fuzzyMatch}`);
+        return fuzzyMatch;
+      }
+    }
+
+    return -1;
+  }
+
+  /**
+   * Find exact match of speech phrase in search text
+   */
+  private findExactMatch(speechPhrase: string, searchWords: string[], searchStartLine: number): number {
+    const searchText = searchWords.join(' ');
+    const matchIndex = searchText.indexOf(speechPhrase);
+
+    if (matchIndex !== -1) {
+      // Convert character position back to line number
+      const wordsBeforeMatch = searchText.substring(0, matchIndex).split(' ').length - 1;
+      const linePosition = this.estimateLineFromWordPosition(wordsBeforeMatch, searchStartLine);
+      return linePosition;
+    }
+
+    return -1;
+  }
+
+  /**
+   * Find fuzzy match allowing for some word differences
+   */
+  private findFuzzyMatch(speechPhrase: string, searchWords: string[], searchStartLine: number): number {
+    const speechWords = speechPhrase.split(' ');
+    const minMatchWords = Math.max(this.minWordsForMatch, speechWords.length); // Very aggressive - require only 30% word match
+
+    // Try multiple sliding window sizes to handle speech recognition variability
+    const windowSizes = [speechWords.length, speechWords.length + 1, speechWords.length - 1].filter(s => s > 0);
+
+    for (const windowSize of windowSizes) {
+      for (let i = 0; i <= searchWords.length - windowSize; i++) {
+        const windowWords = searchWords.slice(i, i + windowSize);
+        let matchCount = 0;
+
+        // More flexible matching - allow words to be out of order within a small range
+        for (const speechWord of speechWords) {
+          for (let j = 0; j < windowWords.length; j++) {
+            if (this.wordsAreSimilar(speechWord, windowWords[j])) {
+              matchCount++;
+              break; // Found a match, move to next speech word
+            }
+          }
+        }
+
+        if (matchCount >= minMatchWords) {
+          const linePosition = this.estimateLineFromWordPosition(i, searchStartLine);
+          console.log(`[FUZZY SUCCESS] Match of ${matchCount} words at word position ${i}, estimated line ${linePosition} for phrase "${speechPhrase}"`);
+          return linePosition;
+        }
+      }
+    }
+
+    return -1;
+  }
+
+    /**
+   * Check if two words are similar (handles common speech recognition errors)
+   */
+  private wordsAreSimilar(word1: string, word2: string): boolean {
+    if (word1 === word2) return true;
+    if (word1.length < 2 || word2.length < 2) return word1 === word2; // More lenient for short words
+
+    // Check if one word starts with the other (common with speech recognition)
+    if (word1.startsWith(word2) || word2.startsWith(word1)) {
+      return true;
+    }
+
+    // Check if one word contains the other (more aggressive matching)
+    if (word1.includes(word2) || word2.includes(word1)) {
+      return true;
+    }
+
+    // More lenient edit distance for words
+    if (word1.length <= 7 && word2.length <= 7) {
+      const maxDistance = Math.max(1, Math.floor(Math.min(word1.length, word2.length) * 0.3)); // Allow 30% character difference
+      return this.calculateLevenshteinDistance(word1, word2) <= maxDistance;
+    }
+
+    return false;
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings
+   */
+  private calculateLevenshteinDistance(str1: string, str2: string): number {
+    const matrix = Array(str2.length + 1).fill(null).map(() => Array(str1.length + 1).fill(null));
+
+    for (let i = 0; i <= str1.length; i++) matrix[0][i] = i;
+    for (let j = 0; j <= str2.length; j++) matrix[j][0] = j;
+
+    for (let j = 1; j <= str2.length; j++) {
+      for (let i = 1; i <= str1.length; i++) {
+        const substitutionCost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+        matrix[j][i] = Math.min(
+          matrix[j][i - 1] + 1, // deletion
+          matrix[j - 1][i] + 1, // insertion
+          matrix[j - 1][i - 1] + substitutionCost // substitution
+        );
+      }
+    }
+
+    return matrix[str2.length][str1.length];
+  }
+
+    /**
+   * Estimate line number from word position in search area
+   */
+  private estimateLineFromWordPosition(wordPosition: number, searchStartLine: number): number {
+    if (this.avgWordsPerLine <= 0) return searchStartLine;
+
+    // More accurate line estimation by counting actual words in lines
+    let wordCount = 0;
+    for (let lineIdx = searchStartLine; lineIdx < this.lines.length; lineIdx++) {
+      const line = this.lines[lineIdx];
+      const lineWords = line ? line.toLowerCase()
+        .replace(/[^\w\s'-]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 0).length : 0;
+
+      if (wordCount + lineWords > wordPosition) {
+        console.log(`[POSITION DEBUG] Word position ${wordPosition} maps to line ${lineIdx} (accumulated ${wordCount} words)`);
+        return lineIdx;
+      }
+
+      wordCount += lineWords;
+    }
+
+    // Fallback to original calculation
+    const estimatedLinesFromStart = Math.floor(wordPosition / this.avgWordsPerLine);
+    const result = Math.max(0, searchStartLine + estimatedLinesFromStart);
+    console.log(`[POSITION DEBUG] Fallback estimation: word ${wordPosition} -> line ${result}`);
+    return result;
+  }
+
+  /**
+   * Enable or disable speech-based scrolling
+   */
+  setSpeechScrollEnabled(enabled: boolean): void {
+    this.speechScrollEnabled = enabled;
+    if (!enabled) {
+      this.speechBuffer = [];
+      this.lastSpeechPosition = -1;
+    }
+  }
+
+  /**
+   * Get current speech scroll status
+   */
+  isSpeechScrollEnabled(): boolean {
+    return this.speechScrollEnabled;
+  }
+
+  /**
+   * Clear speech buffer (useful when resetting or changing text)
+   */
+  clearSpeechBuffer(): void {
+    this.speechBuffer = [];
+    this.lastSpeechPosition = -1;
+  }
+
+  /**
+   * Get the current scrolling mode
+   */
+  getScrollingMode(): string {
+    return this.speechScrollEnabled ? 'SPEECH-BASED' : 'TIME-BASED';
+  }
+
+  /**
+   * Skip over empty lines starting from the given position
+   * @param startPosition - Position to start checking from
+   * @returns Position after skipping empty lines
+   */
+  private skipEmptyLines(startPosition: number): number {
+    let position = startPosition;
+    const maxPosition = this.lines.length - this.numberOfLines;
+
+    // Skip empty lines that would be visible in the current view
+    while (position <= maxPosition) {
+      let hasContent = false;
+
+      // Check if any of the visible lines have content
+      for (let i = 0; i < this.numberOfLines && position + i < this.lines.length; i++) {
+        const line = this.lines[position + i];
+        if (line && line.trim().length > 0) {
+          hasContent = true;
+          break;
+        }
+      }
+
+      if (hasContent) {
+        break; // Found content, stop skipping
+      }
+
+      position++; // Skip this empty view
+    }
+
+    return Math.min(position, maxPosition);
   }
 }
 
@@ -429,6 +815,18 @@ class TeleprompterApp extends TpaServer {
       console.log(`Auto replay changed for user ${userId}: ${oldValue} -> ${newValue}`);
       this.applySettings(session, sessionId, userId);
     });
+
+    // Handle speech scroll enabled changes
+    session.settings.onValueChange('speech_scroll_enabled', (newValue, oldValue) => {
+      console.log(`Speech scroll enabled changed for user ${userId}: ${oldValue} -> ${newValue}`);
+      this.applySettings(session, sessionId, userId);
+    });
+
+    // Handle show estimated total changes
+    session.settings.onValueChange('show_estimated_total', (newValue, oldValue) => {
+      console.log(`Show estimated total changed for user ${userId}: ${oldValue} -> ${newValue}`);
+      this.applySettings(session, sessionId, userId);
+    });
   }
 
   /**
@@ -443,13 +841,15 @@ class TeleprompterApp extends TpaServer {
       // Extract settings from the session
       const lineWidthString = session.settings.get<string>('line_width', "Medium");
       const scrollSpeed = session.settings.get<number>('scroll_speed', 120);
-      const numberOfLines = session.settings.get<number>('number_of_lines', 4);
+      const numberOfLines = parseInt(session.settings.get<string>('number_of_lines', "4"));
       const customText = session.settings.get<string>('custom_text', '');
       const autoReplay = session.settings.get<boolean>('auto_replay', false);
+      const speechScrollEnabled = session.settings.get<boolean>('speech_scroll_enabled', true);
+      const showEstimatedTotal = session.settings.get<boolean>('show_estimated_total', true);
 
       const lineWidth = convertLineWidth(lineWidthString, false);
 
-      console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}, autoReplay=${autoReplay}`);
+      console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}, autoReplay=${autoReplay}, speechScrollEnabled=${speechScrollEnabled}, showEstimatedTotal=${showEstimatedTotal}`);
 
       // Create or update teleprompter manager
       let teleprompterManager = this.userTeleprompterManagers.get(userId);
@@ -458,7 +858,7 @@ class TeleprompterApp extends TpaServer {
       const newTextToSet = (customText ?? '') || teleprompterManager?.getDefaultText() || '';
       console.log(`Applying settings for user ${userId}: customText=${customText}`);
       if (!teleprompterManager) {
-        teleprompterManager = new TeleprompterManager(newTextToSet, lineWidth, scrollSpeed, autoReplay);
+        teleprompterManager = new TeleprompterManager(newTextToSet, lineWidth, scrollSpeed, autoReplay, speechScrollEnabled, showEstimatedTotal);
         teleprompterManager.setNumberOfLines(numberOfLines);
         this.userTeleprompterManagers.set(userId, teleprompterManager);
         textChanged = true; // Always reset on first creation
@@ -472,6 +872,8 @@ class TeleprompterApp extends TpaServer {
         teleprompterManager.setScrollSpeed(scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
         teleprompterManager.setAutoReplay(autoReplay);
+        teleprompterManager.setSpeechScrollEnabled(speechScrollEnabled);
+        teleprompterManager.setShowEstimatedTotal(showEstimatedTotal);
       }
 
       console.log(`Text changed: ${textChanged}`);
@@ -535,7 +937,6 @@ class TeleprompterApp extends TpaServer {
    * Displays text to the user using the SDK's layout API
    */
   private showTextToUser(session: TpaSession, sessionId: string, text: string): void {
-    console.log(`[Session ${sessionId}]: Showing text to user.`);
 
     // Check if the session is still active
     if (!this.sessionScrollers.has(sessionId)) {
@@ -551,8 +952,6 @@ class TeleprompterApp extends TpaServer {
         this.stopScrolling(sessionId);
         return;
       }
-
-      console.log(`[Session ${sessionId}]: Text to show: \n${text}`);
 
       // Use the SDK's layout API to display the text
       session.layouts.showTextWall(text, {
@@ -597,6 +996,41 @@ class TeleprompterApp extends TpaServer {
       return;
     }
 
+        // Set up speech-based scrolling if enabled
+    let transcriptionUnsubscribe: (() => void) | null = null;
+    if (teleprompterManager.isSpeechScrollEnabled()) {
+      try {
+        console.log(`[Session ${sessionId}]: Setting up SPEECH-BASED scrolling for user ${userId} (time-based scrolling disabled)`);
+
+        transcriptionUnsubscribe = session.events.onTranscription((data) => {
+          try {
+            // Check if the session is still active
+            if (!this.sessionScrollers.has(sessionId)) {
+              return;
+            }
+
+            const speechText = data.text?.trim();
+            if (speechText) {
+              console.log(`[Session ${sessionId}]: Processing speech input: "${speechText}" (isFinal: ${data.isFinal})`);
+              teleprompterManager.processSpeechInput(speechText, data.isFinal);
+            }
+          } catch (error) {
+            console.error(`[Session ${sessionId}]: Error processing speech input:`, error);
+          }
+        });
+
+        // Store the unsubscribe function for cleanup
+        this.addCleanupHandler(transcriptionUnsubscribe);
+
+        console.log(`[Session ${sessionId}]: Speech transcription listener set up successfully`);
+      } catch (error) {
+        console.error(`[Session ${sessionId}]: Failed to set up speech transcription:`, error);
+        // Continue with time-based scrolling even if speech setup fails
+      }
+    } else {
+      console.log(`[Session ${sessionId}]: Using TIME-BASED scrolling for user ${userId} (speech-based scrolling disabled)`);
+    }
+
     // Show the initial lines immediately
     // Show the initial lines with a 1 second delay
     setTimeout(() => {
@@ -614,10 +1048,13 @@ class TeleprompterApp extends TpaServer {
             return;
           }
 
-          // Advance the position
-          teleprompterManager.advancePosition();
+          // Only advance by time if speech scrolling is disabled
+          if (!teleprompterManager.isSpeechScrollEnabled()) {
+            // Advance the position
+            teleprompterManager.advancePosition();
+          }
 
-          // Get current text to display
+          // Get current text to display (always update display regardless of scroll mode)
           const textToDisplay = teleprompterManager.getCurrentVisibleText();
 
           // Show the text
@@ -718,3 +1155,4 @@ teleprompterApp.start().then(() => {
 }).catch(error => {
   console.error('Failed to start server:', error);
 });
+
