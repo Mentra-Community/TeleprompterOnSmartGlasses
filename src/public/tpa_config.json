@@ -4,33 +4,49 @@
     "version": "1.0.0",
     "settings": [
         {
-            "type": "group",
-            "title": "Text Input"
-        },
-        {
-            "key": "custom_text",
             "type": "text",
-            "label": "Text",
+            "key": "custom_text",
+            "label": "Text to Display",
             "defaultValue": "Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content through the settings. The teleprompter will automatically scroll text at a comfortable reading pace."
         },
         {
             "type": "group",
-            "title": "General settings"
+            "key": "",
+            "label": "",
+            "title": "General Settings"
         },
         {
-            "key": "line_width",
+            "type": "toggle",
+            "key": "speech_scroll_enabled",
+            "label": "Speech-based scrolling",
+            "defaultValue": true
+        },
+        {
+            "type": "slider",
+            "key": "scroll_speed",
+            "label": "Scroll speed (words per minute)",
+            "defaultValue": 100,
+            "min": 60,
+            "max": 300
+        },
+        {
+            "type": "toggle",
+            "key": "auto_replay",
+            "label": "Auto Replay",
+            "defaultValue": false
+        },
+        {
+            "type": "group",
+            "key": "",
+            "label": "",
+            "title": "Display Preferences"
+        },
+        {
             "type": "select",
+            "key": "line_width",
             "label": "Line width",
-            "defaultValue": "Medium",
+            "defaultValue": "",
             "options": [
-                {
-                    "label": "Very Narrow",
-                    "value": "Very Narrow"
-                },
-                {
-                    "label": "Narrow",
-                    "value": "Narrow"
-                },
                 {
                     "label": "Medium",
                     "value": "Medium"
@@ -42,32 +58,26 @@
             ]
         },
         {
-            "key": "number_of_lines",
             "type": "select",
+            "key": "number_of_lines",
             "label": "Number of lines",
-            "defaultValue": 3,
+            "defaultValue": "4",
             "options": [
                 {
-                    "label": "2",
-                    "value": 2
-                },
-                {
                     "label": "3",
-                    "value": 3
+                    "value": "3"
                 },
                 {
                     "label": "4",
-                    "value": 4
+                    "value": "4"
                 }
             ]
         },
         {
-            "key": "scroll_speed",
-            "type": "slider",
-            "label": "Scroll speed (words per minute)",
-            "defaultValue": 100,
-            "min": 60,
-            "max": 300
+            "type": "toggle",
+            "key": "show_estimated_total",
+            "label": "Show Estimated Total Time",
+            "defaultValue": false
         }
     ]
 }
