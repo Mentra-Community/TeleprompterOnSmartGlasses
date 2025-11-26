@@ -1,18 +1,23 @@
 // augmentos_cloud/packages/apps/teleprompter/src/index.ts
-import express from 'express';
 import path from 'path';
 import {
-  TpaServer,
-  TpaSession,
+  AppServer,
+  AppSession,
   ViewType,
 } from '@mentra/sdk';
 import { TranscriptProcessor } from './utils/src/text-wrapping/TranscriptProcessor';
 import { convertLineWidth } from './utils/src/text-wrapping/convertLineWidth';
+import { type TeleprompterSettings } from './constants/defaultSettings';
+import { SettingsManager } from './services/SettingsManager';
+import { setupAPI } from './api';
+import { DummyAppSession } from './testing/DummyAppSession';
 
 // Configuration constants
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 80;
 const PACKAGE_NAME = process.env.PACKAGE_NAME;
 const MENTRAOS_API_KEY = process.env.MENTRAOS_API_KEY || process.env.AUGMENTOS_API_KEY;
+const NODE_ENV = process.env.NODE_ENV || 'production';
+const IS_DEV_MODE = NODE_ENV === 'development';
 
 // TeleprompterManager class to handle teleprompter functionality
 class TeleprompterManager {
@@ -44,8 +49,9 @@ class TeleprompterManager {
   private minWordsForMatch: number = 3; // Minimum words needed for a reliable match (reduced to 1)
   private lineOffset: number = 0; // Offset the line position by 1 to show the match on the 2nd line
 
-  constructor(text: string, lineWidth: number = 38, scrollSpeed: number = 120, autoReplay: boolean = false, speechScrollEnabled: boolean = true, showEstimatedTotal: boolean = true) {
+  constructor(text: string, numberOfLines: number, lineWidth: number = 38, scrollSpeed: number = 120, autoReplay: boolean = false, speechScrollEnabled: boolean = true, showEstimatedTotal: boolean = true) {
     this.text = text || this.getDefaultText();
+    this.numberOfLines = numberOfLines;
     this.lineWidth = lineWidth;
     this.numberOfLines = 4;
     this.scrollSpeed = scrollSpeed;
@@ -151,7 +157,7 @@ class TeleprompterManager {
   }
 
   getDefaultText(): string {
-    return `Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content through the settings. The teleprompter will automatically scroll text at a comfortable reading pace. You can adjust the scroll speed (in words per minute), line width, and number of lines through the settings menu. As you read this text, it will continue to scroll upward, allowing you to deliver your presentation smoothly and professionally. You can also use the teleprompter to read your own text. Just enter your text in the settings and the teleprompter will display it for you to read. When you reach the end of the text, the teleprompter will show "END OF TEXT" and then restart from the beginning after a short pause.`;
+    return `Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content. The teleprompter will automatically scroll text at a comfortable reading pace. You can adjust the scroll speed (in words per minute), line width, and number of lines through the settings menu. As you read this text, it will continue to scroll upward, allowing you to deliver your presentation smoothly and professionally. You can also use the teleprompter to read your own text. Just enter your text and the teleprompter will display it for you to read. When you reach the end of the text, the teleprompter will show "END OF TEXT" and then restart from the beginning after a short pause.`;
   }
 
   setText(newText: string): void {
@@ -723,10 +729,13 @@ class TeleprompterManager {
  * TeleprompterApp - Main application class for the Teleprompter
  * that extends TpaServer for seamless integration with AugmentOS
  */
-class TeleprompterApp extends TpaServer {
+export class TeleprompterApp extends AppServer {
   // Maps to track user teleprompter managers and active scrollers
   private userTeleprompterManagers = new Map<string, TeleprompterManager>();
   private sessionScrollers = new Map<string, NodeJS.Timeout>();
+  // Track active sessions by user ID
+  private activeUserSessions = new Map<string, { session: AppSession, sessionId: string }>();
+  public settingsManager: SettingsManager;
 
   constructor() {
     if (!MENTRAOS_API_KEY) {
@@ -739,135 +748,108 @@ class TeleprompterApp extends TpaServer {
       port: PORT,
       publicDir: path.join(__dirname, './public')
     });
+
+    // Enable CORS for the webview
+    this.setupCORS();
+
+    // Initialize settings manager
+    this.settingsManager = new SettingsManager();
+    
+    // Setup API routes
+    setupAPI(this.getExpressApp(), this, MENTRAOS_API_KEY);
+
+    // Log development mode status
+    if (IS_DEV_MODE) {
+      console.log('🧪 Running in DEVELOPMENT mode - dummy session will be auto-created');
+    } else {
+      console.log('🚀 Running in PRODUCTION mode - waiting for real glass connections');
+    }
+  }
+
+  private setupCORS(): void {
+    const app = this.getExpressApp();
+    app.use((req, res, next) => {
+      // Allow requests from any origin for development
+      // In production, you should restrict this to your actual webview domain
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+      
+      // Handle preflight requests
+      if (req.method === 'OPTIONS') {
+        res.sendStatus(200);
+      } else {
+        next();
+      }
+    });
   }
 
   /**
    * Called by TpaServer when a new session is created
    */
-  protected async onSession(session: TpaSession, sessionId: string, userId: string): Promise<void> {
+  protected async onSession(session: AppSession, sessionId: string, userId: string): Promise<void> {
     console.log(`\n\n📜📜📜 Received teleprompter session request for user ${userId}, session ${sessionId}\n\n`);
 
     try {
-      // Set up settings change handlers
-      this.setupSettingsHandlers(session, sessionId, userId);
+      // Store the active session for this user
+      this.activeUserSessions.set(userId, { session, sessionId });
 
-      // Apply initial settings
-      await this.applySettings(session, sessionId, userId);
+      // Load settings from SettingsManager
+      const settings = this.settingsManager.getUserSettings(userId);
 
-      // Show initial text
+      console.log(`Applying settings for user ${userId}:`, settings);
+
+      // Create/Update teleprompterManager.
+      this.configureTeleprompterForUser(userId, settings);
+
       const teleprompterManager = this.userTeleprompterManagers.get(userId);
-      if (teleprompterManager) {
-        this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
-      }
-
+      this.showTextToUser(session, sessionId, teleprompterManager!.getCurrentVisibleText());
       // Start scrolling
       this.startScrolling(session, sessionId, userId);
 
     } catch (error) {
-      console.error('Error initializing session:', error);
-      // Create default teleprompter manager if there was an error
-      const teleprompterManager = new TeleprompterManager('', 38, 120);
-      this.userTeleprompterManagers.set(userId, teleprompterManager);
-
-      // Show initial text
-      this.showTextToUser(session, sessionId, teleprompterManager.getCurrentVisibleText());
-
-      // Start scrolling
-      this.startScrolling(session, sessionId, userId);
+      console.error(`Error initializing session ${error} for user ${userId}`);
     }
   }
 
   /**
-   * Set up handlers for settings changes
-   */
-  private setupSettingsHandlers(
-    session: TpaSession,
-    sessionId: string,
-    userId: string
-  ): void {
-    // Handle line width changes
-    session.settings.onValueChange('line_width', (newValue, oldValue) => {
-      console.log(`Line width changed for user ${userId}: ${oldValue} -> ${newValue}`);
-      this.applySettings(session, sessionId, userId);
-    });
-
-    // Handle scroll speed changes
-    session.settings.onValueChange('scroll_speed', (newValue, oldValue) => {
-      console.log(`Scroll speed changed for user ${userId}: ${oldValue} -> ${newValue}`);
-      this.applySettings(session, sessionId, userId);
-    });
-
-    // Handle number of lines changes
-    session.settings.onValueChange('number_of_lines', (newValue, oldValue) => {
-      console.log(`Number of lines changed for user ${userId}: ${oldValue} -> ${newValue}`);
-      this.applySettings(session, sessionId, userId);
-    });
-
-    // Handle custom text changes
-    session.settings.onValueChange('custom_text', (newValue, oldValue) => {
-      console.log(`Custom text changed for user ${userId}`);
-      this.applySettings(session, sessionId, userId);
-      this.stopScrolling(sessionId);
-      this.startScrolling(session, sessionId, userId);
-    });
-
-    session.settings.onValueChange('auto_replay', (newValue, oldValue) => {
-      console.log(`Auto replay changed for user ${userId}: ${oldValue} -> ${newValue}`);
-      this.applySettings(session, sessionId, userId);
-    });
-
-    // Handle speech scroll enabled changes
-    session.settings.onValueChange('speech_scroll_enabled', (newValue, oldValue) => {
-      console.log(`Speech scroll enabled changed for user ${userId}: ${oldValue} -> ${newValue}`);
-      this.applySettings(session, sessionId, userId);
-    });
-
-    // Handle show estimated total changes
-    session.settings.onValueChange('show_estimated_total', (newValue, oldValue) => {
-      console.log(`Show estimated total changed for user ${userId}: ${oldValue} -> ${newValue}`);
-      this.applySettings(session, sessionId, userId);
-    });
+   * Helper method to get active session for a user
+  */
+  public getActiveSessionForUser(userId: string): { session: AppSession, sessionId: string } | null {
+    return this.activeUserSessions.get(userId) || null;
   }
 
   /**
-   * Apply settings from the session to the teleprompter manager
+   * Configure teleprompter for given user.
    */
-  private async applySettings(
-    session: TpaSession,
-    sessionId: string,
-    userId: string
-  ): Promise<void> {
+  public configureTeleprompterForUser(
+    userId: string,
+    settings: TeleprompterSettings
+  ) {
     try {
-      // Extract settings from the session
-      const lineWidthString = session.settings.get<string>('line_width', "Medium");
-      const scrollSpeed = session.settings.get<number>('scroll_speed', 120);
-      const numberOfLines = parseInt(session.settings.get<string>('number_of_lines', "4"));
-      const customText = session.settings.get<string>('custom_text', '');
-      const autoReplay = session.settings.get<boolean>('auto_replay', false);
-      const speechScrollEnabled = session.settings.get<boolean>('speech_scroll_enabled', true);
-      const showEstimatedTotal = session.settings.get<boolean>('show_estimated_total', true);
+      const lineWidth = convertLineWidth(settings.lineWidth, false);
+      const scrollSpeed = settings.scrollSpeed;
+      const numberOfLines = parseInt(settings.numberOfLines);
+      const autoReplay = settings.autoReplay;
+      const speechScrollEnabled = settings.speechScrollEnabled;
+      const showEstimatedTotal = settings.showEstimatedTotal;
 
-      const lineWidth = convertLineWidth(lineWidthString, false);
+      console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth} (from "${settings.lineWidth}"), scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}, autoReplay=${autoReplay}, speechScrollEnabled=${speechScrollEnabled}, showEstimatedTotal=${showEstimatedTotal}`);
 
-      console.log(`Applied settings for user ${userId}: lineWidth=${lineWidth}, scrollSpeed=${scrollSpeed}, numberOfLines=${numberOfLines}, autoReplay=${autoReplay}, speechScrollEnabled=${speechScrollEnabled}, showEstimatedTotal=${showEstimatedTotal}`);
-
-      // Create or update teleprompter manager
+      // Get or create teleprompter manager
       let teleprompterManager = this.userTeleprompterManagers.get(userId);
-      let textChanged = false;
-      // Always ensure newTextToSet is a string
-      const newTextToSet = (customText ?? '') || teleprompterManager?.getDefaultText() || '';
-      console.log(`Applying settings for user ${userId}: customText=${customText}`);
       if (!teleprompterManager) {
-        teleprompterManager = new TeleprompterManager(newTextToSet, lineWidth, scrollSpeed, autoReplay, speechScrollEnabled, showEstimatedTotal);
-        teleprompterManager.setNumberOfLines(numberOfLines);
+        teleprompterManager = new TeleprompterManager(
+          '',
+          numberOfLines,
+          lineWidth,
+          scrollSpeed,
+          autoReplay,
+          speechScrollEnabled,
+          showEstimatedTotal
+        );
         this.userTeleprompterManagers.set(userId, teleprompterManager);
-        textChanged = true; // Always reset on first creation
-      } else {
-        // Check if text changed (compare actual text that will be displayed)
-        if (teleprompterManager.getText() !== newTextToSet) {
-          teleprompterManager.setText(newTextToSet);
-          textChanged = true;
-        }
+      } else {        
         teleprompterManager.setLineWidth(lineWidth);
         teleprompterManager.setScrollSpeed(scrollSpeed);
         teleprompterManager.setNumberOfLines(numberOfLines);
@@ -875,15 +857,9 @@ class TeleprompterApp extends TpaServer {
         teleprompterManager.setSpeechScrollEnabled(speechScrollEnabled);
         teleprompterManager.setShowEstimatedTotal(showEstimatedTotal);
       }
-
-      console.log(`Text changed: ${textChanged}`);
-      // Only reset position if the text changed
-      if (textChanged) {
-        teleprompterManager.resetPosition();
-      }
-
+      console.log(`Settings applied for user ${userId}`);
     } catch (error) {
-      console.error(`Error applying settings for user ${userId}:`, error);
+      console.error(`Error applying settings to user ${userId}:`, error);
       throw error;
     }
   }
@@ -900,43 +876,37 @@ class TeleprompterApp extends TpaServer {
     // Immediately remove the session from our maps to prevent further updates
     this.sessionScrollers.delete(sessionId);
 
-    // Clean up teleprompter manager if this was the last session for this user
-    let hasOtherSessions = false;
-
     try {
-        const activeSessions = (this as any).getSessions?.() || [];
-
-        for (const [activeSessionId, session] of Object.entries(activeSessions)) {
-            if (activeSessionId !== sessionId) {
-                const sessionObj = session as any;
-                if (sessionObj.userId === userId ||
-                    sessionObj.user === userId ||
-                    sessionObj.getUserId?.() === userId) {
-                    hasOtherSessions = true;
-                    break;
-                }
-            }
+        const activeSession = this.activeUserSessions.get(userId);
+        if (activeSession && activeSession.sessionId === sessionId) {
+          this.activeUserSessions.delete(userId);
         }
-
-        // If no other sessions, clean up the teleprompter manager
-        if (!hasOtherSessions) {
-            const teleprompterManager = this.userTeleprompterManagers.get(userId);
-            if (teleprompterManager) {
-                teleprompterManager.clear();
-                teleprompterManager.resetPosition();
-                this.userTeleprompterManagers.delete(userId);
-                console.log(`[User ${userId}]: All sessions closed, teleprompter manager destroyed`);
-            }
+        const teleprompterManager = this.userTeleprompterManagers.get(userId);
+        if (teleprompterManager) {
+            teleprompterManager.clear();
+            teleprompterManager.resetPosition();
+            this.userTeleprompterManagers.delete(userId);
+            console.log(`[User ${userId}]: All sessions closed, teleprompter manager destroyed`);
         }
     } catch (e) {
         console.error('Error cleaning up session:', e);
     }
   }
 
+  public startScrollingToUser(userId: string,textToRead: string) {
+      const activeSession = this.activeUserSessions.get(userId);
+      const teleprompterManager = this.userTeleprompterManagers.get(userId);
+      if (activeSession && teleprompterManager) {
+          teleprompterManager.setText(textToRead);
+          teleprompterManager.resetPosition();
+          this.startScrolling(activeSession.session, activeSession.sessionId, userId);
+      }
+  }
+
   /**
    * Displays text to the user using the SDK's layout API
    */
-  private showTextToUser(session: TpaSession, sessionId: string, text: string): void {
+  private showTextToUser(session: AppSession, sessionId: string, text: string): void {
 
     // Check if the session is still active
     if (!this.sessionScrollers.has(sessionId)) {
@@ -973,7 +943,7 @@ class TeleprompterApp extends TpaServer {
   /**
    * Starts scrolling the teleprompter text for a session
    */
-  private startScrolling(session: TpaSession, sessionId: string, userId: string): void {
+  public startScrolling(session: AppSession, sessionId: string, userId: string): void {
     // Check if we already have a scroller for this session
     if (this.sessionScrollers.has(sessionId)) {
       this.stopScrolling(sessionId);
@@ -1130,7 +1100,7 @@ class TeleprompterApp extends TpaServer {
   /**
    * Stops scrolling for a session
    */
-  private stopScrolling(sessionId: string): void {
+  public stopScrolling(sessionId: string): void {
     const interval = this.sessionScrollers.get(sessionId);
     if (interval) {
       clearInterval(interval);
@@ -1143,15 +1113,37 @@ class TeleprompterApp extends TpaServer {
 // Create and start the app
 const teleprompterApp = new TeleprompterApp();
 
-// Add health check endpoint
-const expressApp = teleprompterApp.getExpressApp();
-expressApp.get('/health', (req, res) => {
-  res.json({ status: 'healthy', app: PACKAGE_NAME });
-});
+// API routes are now handled by setupAPI in the constructor
 
 // Start the server
 teleprompterApp.start().then(() => {
   console.log(`${PACKAGE_NAME} server running on port ${PORT}`);
+  
+  // Auto-create dummy session in development mode
+  if (IS_DEV_MODE) {
+    console.log('\n🧪 Development Mode: Initializing dummy session...\n');
+    
+    setTimeout(() => {
+      const dummySession = new DummyAppSession();
+      const testUserId = 'test-user';
+      const testSessionId = 'dev-session-001';
+      
+      console.log(`✅ Creating dummy session for user: ${testUserId}`);
+      
+      // Call onSession with the dummy session
+      teleprompterApp['onSession'](
+        dummySession as any,
+        testSessionId,
+        testUserId
+      ).then(() => {
+        console.log('✅ Dummy session initialized successfully');
+        console.log('📝 Teleprompter will start scrolling with default text');
+        console.log('💡 Use the webview to send custom text via /api/start-teleprompter\n');
+      }).catch((error) => {
+        console.error('❌ Failed to initialize dummy session:', error);
+      });
+    }, 2000); // 2 second delay for server to fully start
+  }
 }).catch(error => {
   console.error('Failed to start server:', error);
 });

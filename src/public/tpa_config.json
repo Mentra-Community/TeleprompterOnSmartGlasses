@@ -5,7 +5,7 @@
     "settings": [
         {
             "type": "text",
-            "key": "custom_text",
+            "key": "textToRead",
             "label": "Text to Display",
             "defaultValue": "Welcome to AugmentOS Teleprompter. This is a default text that will scroll at your set speed. You can replace this with your own content through the settings. The teleprompter will automatically scroll text at a comfortable reading pace."
         },
@@ -17,13 +17,13 @@
         },
         {
             "type": "toggle",
-            "key": "speech_scroll_enabled",
+            "key": "speechScrollEnabled",
             "label": "Speech-based scrolling",
             "defaultValue": true
         },
         {
             "type": "slider",
-            "key": "scroll_speed",
+            "key": "scrollSpeed",
             "label": "Scroll speed (words per minute)",
             "defaultValue": 100,
             "min": 60,
@@ -31,7 +31,7 @@
         },
         {
             "type": "toggle",
-            "key": "auto_replay",
+            "key": "autoReplay",
             "label": "Auto Replay",
             "defaultValue": false
         },
@@ -43,7 +43,7 @@
         },
         {
             "type": "select",
-            "key": "line_width",
+            "key": "lineWidth",
             "label": "Line width",
             "defaultValue": "",
             "options": [
@@ -59,7 +59,7 @@
         },
         {
             "type": "select",
-            "key": "number_of_lines",
+            "key": "numberOfLines",
             "label": "Number of lines",
             "defaultValue": "4",
             "options": [
@@ -75,7 +75,7 @@
         },
         {
             "type": "toggle",
-            "key": "show_estimated_total",
+            "key": "showEstimatedTotal",
             "label": "Show Estimated Total Time",
             "defaultValue": false
         }
