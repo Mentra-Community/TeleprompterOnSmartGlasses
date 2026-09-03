@@ -32,7 +32,7 @@
   },
   "keywords": [],
   "author": "Nicolo Micheletti",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "dependencies": {
     "@mentra/sdk": "1.1.20",
     "@langchain/anthropic": "^0.3.13",
